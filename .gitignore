@@ -1,0 +1,24 @@
+# Binaries
+bin/
+manager
+dist/
+
+# Test / coverage artifacts
+cover.out
+*.test
+envtest/
+
+# Go build / tooling caches
+*.o
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Local environment files
+.env
