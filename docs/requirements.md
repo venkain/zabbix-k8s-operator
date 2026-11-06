@@ -8,6 +8,20 @@ This repository intentionally does not reference other Zabbix deployment
 tooling. Research and validation material that informed these decisions is
 maintained separately.
 
+## Reference policy
+
+The normative reference for all Zabbix behavior, configuration, defaults,
+and requirements is the **official Zabbix documentation for the targeted
+version**:
+
+- Zabbix 8.0 (primary): <https://www.zabbix.com/documentation/8.0/en/manual>
+- Zabbix 7.0 LTS (run target): <https://www.zabbix.com/documentation/7.0/en/manual>
+
+Component environment-variable specifics follow the official container
+documentation under the same versioned manual
+(`.../manual/installation/containers`). Community charts, forum threads,
+and third-party tutorials are never normative and are not cited here.
+
 ## Goals
 
 1. A production-ready Kubernetes operator for Zabbix: declarative custom
