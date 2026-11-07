@@ -87,9 +87,17 @@ and third-party tutorials are never normative and are not cited here.
   operator, or left to users?
 - OQ3: How much of the `ZBX_*` configuration surface to expose in the CR
   spec vs hidden behind sane production defaults.
+- OQ4: Active-server routing — how the frontend (and proxies/agents)
+  reach the *active* HA server node: a controller-managed Service whose
+  selector tracks the active node (driven by HA node state via the Zabbix
+  API), versus a headless Service with readiness that reflects the active
+  role. Decide during Phase 1; affects Service topology and reconcile
+  scope.
 
 ## Decision log
 
 - 2026-11-06: D1–D5 accepted; scope matrix drafted. Phase 0 research
   (deployment-tooling analysis and hands-on validation evidence) completed
   in a separate research repository.
+- 2026-11-07: Reference policy recorded (official versioned Zabbix docs
+  are the sole normative reference). OQ4 added (active-server routing).
