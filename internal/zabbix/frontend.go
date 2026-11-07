@@ -1,0 +1,191 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package zabbix
+
+import (
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+
+	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
+)
+
+// FrontendDeployment builds the Zabbix frontend (nginx) Deployment. The
+// frontend is stateless; it talks to the database directly and to the
+// server through the active-node Service.
+func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deployment {
+	spec := z.Spec.Frontend
+	replicas := int32(1)
+	if spec != nil && spec.Replicas != nil {
+		replicas = *spec.Replicas
+	}
+
+	podLabels := commonLabels(z.Name, ComponentFrontend)
+
+	env := append(db.FrontendEnvVars(), ServerEnvVarsForFrontend(z)...)
+	if spec != nil {
+		env = append(env, spec.Env...)
+	}
+
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      FrontendName(z.Name),
+			Namespace: z.Namespace,
+			Labels:    podLabels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(z.Name, ComponentFrontend)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:            "zabbix-frontend",
+						Image:           ImageFor("web-nginx-pgsql", z.Spec.Version, frontendImage(spec)),
+						ImagePullPolicy: pullPolicy(frontendImage(spec)),
+						Env:             env,
+						Ports: []corev1.ContainerPort{
+							{Name: "http", ContainerPort: FrontendPort},
+						},
+						ReadinessProbe: httpProbe("/"),
+						LivenessProbe:  httpProbe("/"),
+						Resources:      frontendResources(spec),
+					}},
+				},
+			},
+		},
+	}
+}
+
+// FrontendService builds the frontend Service (the user-facing entry).
+func FrontendService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      FrontendName(z.Name),
+			Namespace: z.Namespace,
+			Labels:    commonLabels(z.Name, ComponentFrontend),
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: selectorLabels(z.Name, ComponentFrontend),
+			Ports: []corev1.ServicePort{{
+				Name:       "http",
+				Port:       80,
+				TargetPort: intstr.FromInt32(FrontendPort),
+			}},
+		},
+	}
+}
+
+// WebServiceDeployment builds the Zabbix web service Deployment (used by
+// the server for scheduled reports). The server reaches it via the
+// WebServiceURL config fragment built by WebServiceConfigFragment.
+func WebServiceDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
+	spec := z.Spec.WebService
+	replicas := int32(1)
+	if spec != nil && spec.Replicas != nil {
+		replicas = *spec.Replicas
+	}
+
+	podLabels := commonLabels(z.Name, ComponentWebService)
+
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      WebServiceName(z.Name),
+			Namespace: z.Namespace,
+			Labels:    podLabels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(z.Name, ComponentWebService)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:            "zabbix-web-service",
+						Image:           ImageFor("web-service", z.Spec.Version, webServiceImage(spec)),
+						ImagePullPolicy: pullPolicy(webServiceImage(spec)),
+						Ports: []corev1.ContainerPort{
+							{Name: "http", ContainerPort: WebServicePort},
+						},
+						ReadinessProbe: tcpProbe(WebServicePort),
+						Resources:      webServiceResources(spec),
+					}},
+				},
+			},
+		},
+	}
+}
+
+// WebServiceService builds the Service fronting the web service.
+func WebServiceService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      WebServiceName(z.Name),
+			Namespace: z.Namespace,
+			Labels:    commonLabels(z.Name, ComponentWebService),
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: selectorLabels(z.Name, ComponentWebService),
+			Ports: []corev1.ServicePort{{
+				Name:       "http",
+				Port:       WebServicePort,
+				TargetPort: intstr.FromInt32(WebServicePort),
+			}},
+		},
+	}
+}
+
+func frontendImage(spec *zabbixv1alpha1.FrontendSpec) *zabbixv1alpha1.ImageSpec {
+	if spec == nil {
+		return nil
+	}
+	return spec.Image
+}
+
+func frontendResources(spec *zabbixv1alpha1.FrontendSpec) corev1.ResourceRequirements {
+	if spec == nil {
+		return corev1.ResourceRequirements{}
+	}
+	return spec.Resources
+}
+
+func webServiceImage(spec *zabbixv1alpha1.WebServiceSpec) *zabbixv1alpha1.ImageSpec {
+	if spec == nil {
+		return nil
+	}
+	return spec.Image
+}
+
+func webServiceResources(spec *zabbixv1alpha1.WebServiceSpec) corev1.ResourceRequirements {
+	if spec == nil {
+		return corev1.ResourceRequirements{}
+	}
+	return spec.Resources
+}
+
+func httpProbe(path string) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromInt32(FrontendPort)},
+		},
+		InitialDelaySeconds: 20,
+		PeriodSeconds:       10,
+	}
+}

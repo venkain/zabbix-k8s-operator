@@ -24,7 +24,7 @@ import (
 
 // DatabaseSpec selects the PostgreSQL database backing the deployment.
 // Exactly one provider must be configured.
-// +kubebuilder:validation:XValidation:message="exactly one of cnpg or external must be set",rule="[has(self.cnpg), has(self.external)] | [true, false]"
+// +kubebuilder:validation:XValidation:message="exactly one of cnpg or external must be set",rule="has(self.cnpg) != has(self.external)"
 type DatabaseSpec struct {
 	// cnpg references a CloudNativePG Cluster that provides the database.
 	// The operator reads the Cluster's app-user Secret (<clusterName>-app)
@@ -209,6 +209,10 @@ type ServerHAStatus struct {
 type ComponentConditionType string
 
 const (
+	// ConditionReady indicates the deployment as a whole is deployed and
+	// all its components are ready.
+	ConditionReady ComponentConditionType = "Ready"
+
 	// ConditionDatabaseReady indicates the selected database is reachable.
 	ConditionDatabaseReady ComponentConditionType = "DatabaseReady"
 

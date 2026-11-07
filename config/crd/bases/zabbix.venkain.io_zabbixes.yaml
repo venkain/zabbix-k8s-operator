@@ -98,7 +98,7 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: exactly one of cnpg or external must be set
-                  rule: '[has(self.cnpg), has(self.external)] | [true, false]'
+                  rule: has(self.cnpg) != has(self.external)
               frontend:
                 description: frontend configures the Zabbix frontend. Deployed by
                   default.

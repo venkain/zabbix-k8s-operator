@@ -54,7 +54,11 @@ var _ = Describe("ZabbixProxyGroup Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: zabbixv1alpha1.ZabbixProxyGroupSpec{
+						Version:   "8.0",
+						GroupName: "test-group",
+						ServerRef: "test-zabbix",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

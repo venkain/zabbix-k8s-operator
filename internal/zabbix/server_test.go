@@ -1,0 +1,198 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package zabbix
+
+import (
+	"testing"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
+)
+
+func int32Ptr(i int32) *int32 { return &i }
+func boolPtr(b bool) *bool    { return &b }
+
+func envByName(envs []corev1.EnvVar, name string) (corev1.EnvVar, bool) {
+	for _, e := range envs {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return corev1.EnvVar{}, false
+}
+
+func envIndex(envs []corev1.EnvVar, name string) int {
+	for i, e := range envs {
+		if e.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func testZabbix() *zabbixv1alpha1.Zabbix {
+	return &zabbixv1alpha1.Zabbix{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-zabbix", Namespace: "test-ns", UID: "uid-1"},
+		Spec: zabbixv1alpha1.ZabbixSpec{
+			Version: "8.0",
+			Database: zabbixv1alpha1.DatabaseSpec{
+				CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: "zabbix-db"},
+			},
+		},
+	}
+}
+
+func testDB() *DatabaseEnv {
+	return &DatabaseEnv{
+		Host: "zabbix-db-rw", Port: "5432", User: "zabbix", Password: "secret", DBName: "zabbix",
+	}
+}
+
+func TestServerDeploymentStandalone(t *testing.T) {
+	z := testZabbix()
+	dep := ServerDeployment(z, testDB())
+
+	if *dep.Spec.Replicas != 1 {
+		t.Errorf("replicas = %d, want 1", *dep.Spec.Replicas)
+	}
+	if dep.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Errorf("strategy = %q, want Recreate (per-pod HA identity)", dep.Spec.Strategy.Type)
+	}
+
+	podLabels := dep.Spec.Template.Labels
+	if podLabels[HARoleLabel] != HARoleActive {
+		t.Errorf("standalone pod labels must mark the pod %s=%s, got %v", HARoleLabel, HARoleActive, podLabels)
+	}
+
+	server := dep.Spec.Template.Spec.Containers[0]
+	for _, ha := range []string{"ZBX_AUTOHANODENAME", "ZBX_AUTONODEADDRESS", "ZBX_NODEADDRESSPORT"} {
+		if _, ok := envByName(server.Env, ha); ok {
+			t.Errorf("standalone server must not set %s", ha)
+		}
+	}
+	if got := server.Image; got != "zabbix/zabbix-server-pgsql:ubuntu-8.0-latest" {
+		t.Errorf("server image = %q", got)
+	}
+
+	// Agent 2 sidecar on by default.
+	if len(dep.Spec.Template.Spec.Containers) != 2 {
+		t.Fatalf("container count = %d, want 2 (server + agent2)", len(dep.Spec.Template.Spec.Containers))
+	}
+}
+
+func TestServerDeploymentHA(t *testing.T) {
+	z := testZabbix()
+	z.Spec.Server.Replicas = int32Ptr(3)
+	dep := ServerDeployment(z, testDB())
+
+	if *dep.Spec.Replicas != 3 {
+		t.Errorf("replicas = %d, want 3", *dep.Spec.Replicas)
+	}
+	if dep.Spec.Template.Labels[HARoleLabel] != "" {
+		t.Errorf("HA pod template must not carry the HA-role label (it is maintained per pod), got %v", dep.Spec.Template.Labels)
+	}
+
+	server := dep.Spec.Template.Spec.Containers[0]
+	env, _ := envByName(server.Env, "ZBX_AUTOHANODENAME")
+	if env.Value != "hostname" {
+		t.Errorf("ZBX_AUTOHANODENAME = %q, want hostname", env.Value)
+	}
+	env, _ = envByName(server.Env, "ZBX_AUTONODEADDRESS")
+	if env.Value != "hostname" {
+		t.Errorf("ZBX_AUTONODEADDRESS = %q, want hostname", env.Value)
+	}
+	env, _ = envByName(server.Env, "ZBX_NODEADDRESSPORT")
+	if env.Value != "10051" {
+		t.Errorf("ZBX_NODEADDRESSPORT = %q, want 10051", env.Value)
+	}
+}
+
+func TestServerAgentDisabled(t *testing.T) {
+	z := testZabbix()
+	z.Spec.Server.Agent = &zabbixv1alpha1.AgentSidecarSpec{Enabled: boolPtr(false)}
+	dep := ServerDeployment(z, testDB())
+	if len(dep.Spec.Template.Spec.Containers) != 1 {
+		t.Errorf("container count = %d, want 1 with agent disabled", len(dep.Spec.Template.Spec.Containers))
+	}
+}
+
+func TestAgentEnvOrdering(t *testing.T) {
+	// $(POD_NAME) expansion only sees variables defined earlier, so
+	// POD_NAME must precede ZBX_HOSTNAME.
+	z := testZabbix()
+	dep := ServerDeployment(z, testDB())
+	var agent *corev1.Container
+	for i := range dep.Spec.Template.Spec.Containers {
+		if dep.Spec.Template.Spec.Containers[i].Name == agentContainerName {
+			agent = &dep.Spec.Template.Spec.Containers[i]
+		}
+	}
+	if agent == nil {
+		t.Fatal("agent2 container missing")
+	}
+	podIdx := envIndex(agent.Env, "POD_NAME")
+	hostIdx := envIndex(agent.Env, "ZBX_HOSTNAME")
+	if podIdx == -1 || hostIdx == -1 || podIdx > hostIdx {
+		t.Errorf("POD_NAME must be defined before ZBX_HOSTNAME, got order: %+v", agent.Env)
+	}
+}
+
+func TestWebServiceEnv(t *testing.T) {
+	z := testZabbix()
+	z.Spec.WebService = &zabbixv1alpha1.WebServiceSpec{}
+
+	dep := ServerDeployment(z, testDB())
+	server := dep.Spec.Template.Spec.Containers[0]
+	env, _ := envByName(server.Env, "ZBX_WEBSERVICEURL")
+	if env.Value != "http://test-zabbix-web-service:10053/report" {
+		t.Errorf("ZBX_WEBSERVICEURL = %q, want http://test-zabbix-web-service:10053/report", env.Value)
+	}
+	if _, ok := envByName(server.Env, "ZBX_STARTREPORTWRITERS"); !ok {
+		t.Error("ZBX_STARTREPORTWRITERS missing when web service is deployed")
+	}
+
+	noWS := ServerDeployment(testZabbix(), testDB())
+	if _, ok := envByName(noWS.Spec.Template.Spec.Containers[0].Env, "ZBX_WEBSERVICEURL"); ok {
+		t.Error("ZBX_WEBSERVICEURL must not be set when no web service is configured")
+	}
+}
+
+func TestServerServices(t *testing.T) {
+	z := testZabbix()
+
+	svc := ServerService(z)
+	if svc.Name != "test-zabbix-server" {
+		t.Errorf("server service name = %q", svc.Name)
+	}
+	if svc.Spec.Selector[ComponentLabel] != ComponentServer || svc.Spec.Selector[InstanceLabel] != z.Name {
+		t.Errorf("server service selector = %v", svc.Spec.Selector)
+	}
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != ServerPort {
+		t.Errorf("server service ports = %+v", svc.Spec.Ports)
+	}
+
+	active := ActiveServerService(z)
+	if active.Name != "test-zabbix-server-active" {
+		t.Errorf("active service name = %q", active.Name)
+	}
+	if active.Spec.Selector[HARoleLabel] != HARoleActive {
+		t.Errorf("active service selector must include %s=%s, got %v", HARoleLabel, HARoleActive, active.Spec.Selector)
+	}
+}
