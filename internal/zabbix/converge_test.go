@@ -27,7 +27,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 )
@@ -48,12 +47,8 @@ func TestConvergeCreateSetsOwner(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
 	z := testZabbix()
 
-	result, err := Converge(context.Background(), c, z, FrontendService(z))
-	if err != nil {
+	if err := Converge(context.Background(), c, z, FrontendService(z)); err != nil {
 		t.Fatalf("Converge: %v", err)
-	}
-	if result != controllerutil.OperationResultCreated {
-		t.Errorf("result = %q, want created", result)
 	}
 
 	var live corev1.Service
@@ -65,13 +60,14 @@ func TestConvergeCreateSetsOwner(t *testing.T) {
 	}
 }
 
-func TestConvergeUpdateAppliesSpecAndPreservesClusterIP(t *testing.T) {
+func TestConvergeUpdateAppliesSpecAndPreservesUnmanagedFields(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
 	z := testZabbix()
 
 	// Pre-existing service as if allocated by the API server, with a
-	// stale selector to prove the template is authoritative on update.
+	// stale selector to prove the applied configuration is authoritative
+	// for the fields the operator manages.
 	existing := FrontendService(z)
 	existing.Spec.ClusterIP = "10.0.0.5"
 	existing.Spec.Selector = map[string]string{"legacy": "selector"}
@@ -79,12 +75,8 @@ func TestConvergeUpdateAppliesSpecAndPreservesClusterIP(t *testing.T) {
 		t.Fatalf("seeding existing service: %v", err)
 	}
 
-	result, err := Converge(ctx, c, z, FrontendService(z))
-	if err != nil {
+	if err := Converge(ctx, c, z, FrontendService(z)); err != nil {
 		t.Fatalf("Converge: %v", err)
-	}
-	if result != controllerutil.OperationResultUpdated {
-		t.Errorf("result = %q, want updated", result)
 	}
 
 	var live corev1.Service
@@ -92,10 +84,10 @@ func TestConvergeUpdateAppliesSpecAndPreservesClusterIP(t *testing.T) {
 		t.Fatalf("get converged service: %v", err)
 	}
 	if live.Spec.ClusterIP != "10.0.0.5" {
-		t.Errorf("clusterIP = %q, want preserved 10.0.0.5", live.Spec.ClusterIP)
+		t.Errorf("clusterIP = %q, want preserved 10.0.0.5 (unmanaged field)", live.Spec.ClusterIP)
 	}
 	if live.Spec.Selector[ComponentLabel] != ComponentFrontend {
-		t.Errorf("selector = %v, want template selector", live.Spec.Selector)
+		t.Errorf("selector = %v, want applied selector", live.Spec.Selector)
 	}
 	if live.OwnerReferences[0].UID != z.UID {
 		t.Errorf("owner references = %+v, want the Zabbix resource", live.OwnerReferences)
@@ -108,18 +100,14 @@ func TestConvergeUpdateAppliesDeploymentSpec(t *testing.T) {
 	z := testZabbix()
 
 	// First converge creates the deployment...
-	if _, err := Converge(ctx, c, z, ServerDeployment(z, testDB())); err != nil {
+	if err := Converge(ctx, c, z, ServerDeployment(z, testDB())); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 
 	// ...then a spec change on the Zabbix resource must reach the live object.
 	z.Spec.Server.Replicas = int32Ptr(3)
-	result, err := Converge(ctx, c, z, ServerDeployment(z, testDB()))
-	if err != nil {
+	if err := Converge(ctx, c, z, ServerDeployment(z, testDB())); err != nil {
 		t.Fatalf("Converge after change: %v", err)
-	}
-	if result != controllerutil.OperationResultUpdated {
-		t.Errorf("result = %q, want updated", result)
 	}
 
 	var live appsv1.Deployment

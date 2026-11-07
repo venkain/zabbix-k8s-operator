@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -77,18 +78,22 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
-	status := zabbixv1alpha1.ZabbixStatus{
-		ObservedGeneration: z.Generation,
-	}
+	// The status is built on a copy of the CURRENT status: SetStatusCondition
+	// preserves lastTransitionTime of unchanged conditions, so a write that
+	// changes nothing can be detected and skipped below. Without the skip,
+	// every Status().Update bumps resourceVersion, the watch requeues the
+	// resource, and the controller hot-loops on itself.
+	status := z.Status.DeepCopy()
+	status.ObservedGeneration = z.Generation
 
 	// 1. Resolve the database wiring. Without it nothing can run.
 	db, err := zabbix.ResolveDatabase(ctx, r.Client, z.Namespace, z.Spec.Database)
 	if err != nil {
 		log.Error(err, "database resolution failed; requeueing")
-		setCond(&status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionFalse, "DatabaseUnresolved", err.Error(), z.Generation)
-		return persistStatus(ctx, r.Client, &z, status, databaseRetryDelay)
+		setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionFalse, "DatabaseUnresolved", err.Error(), z.Generation)
+		return persistStatus(ctx, r.Client, &z, *status, databaseRetryDelay)
 	}
-	setCond(&status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
+	setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
 		fmt.Sprintf("connection details resolved from secret %s", db.SecretName()), z.Generation)
 
 	// 2. Converge every owned object.
@@ -102,14 +107,14 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("checking server readiness: %w", err)
 	}
-	setCond(&status, zabbixv1alpha1.ConditionServerReady, readyCondition(serverReady), "ServerDeployment", deploymentMessage("server", serverReady), z.Generation)
+	setCond(status, zabbixv1alpha1.ConditionServerReady, readyCondition(serverReady), "ServerDeployment", deploymentMessage("server", serverReady), z.Generation)
 
 	frontendReady, err := zabbix.ComponentIsReady(ctx, r.Client, z.Namespace,
 		zabbix.FrontendName(z.Name), frontendReplicas(&z))
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("checking frontend readiness: %w", err)
 	}
-	setCond(&status, zabbixv1alpha1.ConditionFrontendReady, readyCondition(frontendReady), "FrontendDeployment", deploymentMessage("frontend", frontendReady), z.Generation)
+	setCond(status, zabbixv1alpha1.ConditionFrontendReady, readyCondition(frontendReady), "FrontendDeployment", deploymentMessage("frontend", frontendReady), z.Generation)
 
 	componentsReady := serverReady && frontendReady
 
@@ -119,7 +124,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("checking web service readiness: %w", err)
 		}
-		setCond(&status, zabbixv1alpha1.ConditionWebServiceReady, readyCondition(webServiceReady), "WebServiceDeployment", deploymentMessage("web service", webServiceReady), z.Generation)
+		setCond(status, zabbixv1alpha1.ConditionWebServiceReady, readyCondition(webServiceReady), "WebServiceDeployment", deploymentMessage("web service", webServiceReady), z.Generation)
 		componentsReady = componentsReady && webServiceReady
 	}
 
@@ -127,21 +132,24 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if !componentsReady {
 		readyMsg = "waiting for components to become ready"
 	}
-	setCond(&status, zabbixv1alpha1.ConditionReady, readyCondition(componentsReady), "ComponentsReady", readyMsg, z.Generation)
+	setCond(status, zabbixv1alpha1.ConditionReady, readyCondition(componentsReady), "ComponentsReady", readyMsg, z.Generation)
 
-	return persistStatus(ctx, r.Client, &z, status, 0)
+	return persistStatus(ctx, r.Client, &z, *status, 0)
 }
 
-// persistStatus writes the given status and returns the reconcile result.
+// persistStatus writes the given status only when it differs from the
+// status currently stored on the resource (no-op writes would requeue the
+// resource through the watch and hot-loop the controller), and returns the
+// reconcile result.
 func persistStatus(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix, status zabbixv1alpha1.ZabbixStatus, requeue time.Duration) (ctrl.Result, error) {
+	if reflect.DeepEqual(z.Status, status) {
+		return ctrl.Result{RequeueAfter: requeue}, nil
+	}
 	z.Status = status
 	if err := c.Status().Update(ctx, z); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 	}
-	if requeue > 0 {
-		return ctrl.Result{RequeueAfter: requeue}, nil
-	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 func setCond(status *zabbixv1alpha1.ZabbixStatus, t zabbixv1alpha1.ComponentConditionType, s metav1.ConditionStatus, reason, message string, generation int64) {

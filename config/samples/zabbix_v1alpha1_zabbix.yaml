@@ -1,9 +1,18 @@
 apiVersion: zabbix.venkain.io/v1alpha1
 kind: Zabbix
 metadata:
-  labels:
-    app.kubernetes.io/name: zabbix-k8s-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: zabbix-sample
+  name: zbx
+  namespace: monitoring
 spec:
-  # TODO(user): Add fields here
+  version: "8.0"
+  database:
+    cnpg:
+      clusterName: zabbix-db
+  server:
+    replicas: 1
+    agent:
+      enabled: true
+  frontend:
+    replicas: 1
+  webService:
+    replicas: 1

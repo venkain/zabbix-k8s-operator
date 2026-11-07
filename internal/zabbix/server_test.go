@@ -152,6 +152,15 @@ func TestAgentEnvOrdering(t *testing.T) {
 	if podIdx == -1 || hostIdx == -1 || podIdx > hostIdx {
 		t.Errorf("POD_NAME must be defined before ZBX_HOSTNAME, got order: %+v", agent.Env)
 	}
+
+	// Regression: Kubernetes injects ZBX_SERVER_PORT=tcp://<ip>:<port>
+	// for a Service named <instance>-server namespace-wide; the agent
+	// entrypoint composes ServerActive from it, so the container must
+	// define it explicitly.
+	portEnv, ok := envByName(agent.Env, "ZBX_SERVER_PORT")
+	if !ok || portEnv.Value != "10051" {
+		t.Errorf("agent must define ZBX_SERVER_PORT explicitly, got %+v", portEnv)
+	}
 }
 
 func TestWebServiceEnv(t *testing.T) {

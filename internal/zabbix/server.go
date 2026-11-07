@@ -210,7 +210,13 @@ func agentSidecar(z *zabbixv1alpha1.Zabbix, spec *zabbixv1alpha1.AgentSidecarSpe
 			// must precede ZBX_HOSTNAME for $(VAR) expansion to resolve.
 			{Name: "POD_NAME", ValueFrom: fieldRef("metadata.name")},
 			{Name: "ZBX_HOSTNAME", Value: "$(POD_NAME)"},
+			// Explicit overrides: Kubernetes injects Service environment
+			// variables into every pod — a Service named <instance>-server
+			// injects ZBX_SERVER_PORT=<tcp://ip:port> namespace-wide, which
+			// corrupts the agent's ServerActive composition. Defining the
+			// variables here makes the container values authoritative.
 			{Name: "ZBX_SERVER_HOST", Value: "127.0.0.1"},
+			{Name: "ZBX_SERVER_PORT", Value: fmt.Sprintf("%d", ServerPort)},
 			{Name: "ZBX_SERVER_NAME", Value: z.Name},
 		},
 	}

@@ -36,60 +36,46 @@ import (
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 )
 
+// fieldManager is the server-side-apply field manager identifying every
+// field the operator owns. Objects converged by this operator are fully
+// owned: fields it stops setting are removed again on the next apply.
+const fieldManager = "zabbix-k8s-operator"
+
 // Converge creates or updates obj so it matches the built (desired) state,
-// with the Zabbix resource as owner. It reports whether anything changed.
-// Every owned object flows through here — the single place enforcing the
-// create-or-update discipline (no drift, no orphans): the built object is
-// the authoritative template and its spec/labels are re-applied on every
-// reconcile; status is a subresource and never touched.
-func Converge(ctx context.Context, c client.Client, owner *zabbixv1alpha1.Zabbix, desired client.Object) (controllerutil.OperationResult, error) {
+// with the Zabbix resource as owner. Every owned object flows through here.
+//
+// Convergence uses server-side apply: the API server merges and compares
+// only the fields present in the built object, so API defaulting (e.g.
+// revisionHistoryLimit, progressDeadlineSeconds, protocol) never shows up
+// as a diff. A repeated apply of an unchanged configuration is a server
+// -side no-op — no update, no watch event, no reconcile loop. This is why
+// Converge does not use controllerutil.CreateOrUpdate with wholesale spec
+// reapplication: the client-side deep-equal there sees defaulted live
+// fields as drift and updates every object on every reconcile (a storm).
+func Converge(ctx context.Context, c client.Client, owner *zabbixv1alpha1.Zabbix, desired client.Object) error {
 	log := log.FromContext(ctx).WithValues("object", fmt.Sprintf("%T", desired), "name", desired.GetName())
 
-	// Ownership must be set before CreateOrUpdate: on the create path the
-	// mutator is not invoked, so the object is created as built.
+	// Ownership must be part of the applied configuration so the created
+	// object is owned (and garbage-collected) from birth.
 	if err := controllerutil.SetControllerReference(owner, desired, c.Scheme()); err != nil {
-		return "", fmt.Errorf("setting controller reference: %w", err)
+		return fmt.Errorf("setting controller reference: %w", err)
 	}
 
-	// Preserve the built desired state; CreateOrUpdate replaces the passed
-	// object with the live one before mutating.
-	template := desired.DeepCopyObject().(client.Object)
+	// Apply patches require the configuration to carry its GVK.
+	switch d := desired.(type) {
+	case *appsv1.Deployment:
+		d.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind("Deployment"))
+	case *corev1.Service:
+		d.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Service"))
+	default:
+		return fmt.Errorf("unsupported owned object type %T", desired)
+	}
 
-	result, err := controllerutil.CreateOrUpdate(ctx, c, desired, func() error {
-		switch tmpl := template.(type) {
-		case *appsv1.Deployment:
-			live := desired.(*appsv1.Deployment)
-			live.Spec = tmpl.Spec
-			live.Labels = tmpl.Labels
-			live.Annotations = tmpl.Annotations
-			live.OwnerReferences = tmpl.OwnerReferences
-		case *corev1.Service:
-			live := desired.(*corev1.Service)
-			// Keep cluster-allocated values: the API rejects a Service
-			// update that clears ClusterIP, and a dropped NodePort would
-			// cause reallocation churn.
-			clusterIP := live.Spec.ClusterIP
-			clusterIPs := live.Spec.ClusterIPs
-			nodePorts := serviceNodePorts(live)
-			live.Spec = tmpl.Spec
-			live.Spec.ClusterIP = clusterIP
-			live.Spec.ClusterIPs = clusterIPs
-			restoreNodePorts(live, nodePorts)
-			live.Labels = tmpl.Labels
-			live.Annotations = tmpl.Annotations
-			live.OwnerReferences = tmpl.OwnerReferences
-		default:
-			return fmt.Errorf("unsupported owned object type %T", template)
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
+	if err := c.Patch(ctx, desired, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+		return err
 	}
-	if result != controllerutil.OperationResultNone {
-		log.Info("converged object", "operation", result)
-	}
-	return result, nil
+	log.V(1).Info("applied object")
+	return nil
 }
 
 // ConvergeAll creates/updates every object the Zabbix resource owns.
@@ -110,7 +96,7 @@ func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix,
 	}
 
 	for _, obj := range objects {
-		if _, err := Converge(ctx, c, z, obj); err != nil {
+		if err := Converge(ctx, c, z, obj); err != nil {
 			return fmt.Errorf("converging %T %s: %w", obj, obj.GetName(), err)
 		}
 	}
@@ -147,37 +133,4 @@ func SetCondition(status *zabbixv1alpha1.ZabbixStatus, condType string, condStat
 		Reason:             reason,
 		Message:            message,
 	})
-}
-
-// serviceNodePorts captures the allocated node ports by port name (empty
-// name = first port).
-func serviceNodePorts(svc *corev1.Service) map[string]int32 {
-	ports := make(map[string]int32, len(svc.Spec.Ports))
-	for i, p := range svc.Spec.Ports {
-		if p.NodePort != 0 {
-			key := p.Name
-			if key == "" {
-				key = fmt.Sprintf("#%d", i)
-			}
-			ports[key] = p.NodePort
-		}
-	}
-	return ports
-}
-
-// restoreNodePorts reapplies captured node ports onto the converged spec.
-func restoreNodePorts(svc *corev1.Service, nodePorts map[string]int32) {
-	if len(nodePorts) == 0 {
-		return
-	}
-	for i := range svc.Spec.Ports {
-		p := &svc.Spec.Ports[i]
-		key := p.Name
-		if key == "" {
-			key = fmt.Sprintf("#%d", i)
-		}
-		if np, ok := nodePorts[key]; ok {
-			p.NodePort = np
-		}
-	}
 }

@@ -111,9 +111,23 @@ var _ = Describe("Zabbix Controller", func() {
 
 			Expect(condition(updated, zabbixv1alpha1.ConditionReady)).NotTo(BeNil())
 
-			By("reconciling again without changes (idempotency)")
+			By("reconciling again without writes (idempotency — no apply storm)")
+			serverRV := func() string {
+				dep := &appsv1.Deployment{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-server", Namespace: resourceNamespace}, dep)).Should(Succeed())
+				return dep.ResourceVersion
+			}
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
+			before := serverRV()
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			// Repeated reconciles must not touch the converged objects:
+			// server-side apply is a no-op when the configuration is
+			// unchanged, and an unchanged status is not rewritten.
+			Expect(serverRV()).To(Equal(before))
 		})
 
 		It("should requeue when the database secret is missing and report DatabaseReady=False", func() {
