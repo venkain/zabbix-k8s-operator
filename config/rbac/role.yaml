@@ -1,0 +1,35 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - zabbix.venkain.io
+  resources:
+  - zabbixes
+  - zabbixproxygroups
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - zabbix.venkain.io
+  resources:
+  - zabbixes/finalizers
+  - zabbixproxygroups/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - zabbix.venkain.io
+  resources:
+  - zabbixes/status
+  - zabbixproxygroups/status
+  verbs:
+  - get
+  - patch
+  - update

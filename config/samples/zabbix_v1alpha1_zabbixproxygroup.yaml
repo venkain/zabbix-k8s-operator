@@ -1,0 +1,9 @@
+apiVersion: zabbix.venkain.io/v1alpha1
+kind: ZabbixProxyGroup
+metadata:
+  labels:
+    app.kubernetes.io/name: zabbix-k8s-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: zabbixproxygroup-sample
+spec:
+  # TODO(user): Add fields here

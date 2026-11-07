@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- zabbix_v1alpha1_zabbix.yaml
+- zabbix_v1alpha1_zabbixproxygroup.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
