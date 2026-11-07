@@ -19,6 +19,8 @@ package zabbix
 import (
 	"testing"
 
+	"k8s.io/utils/ptr"
+
 	corev1 "k8s.io/api/core/v1"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -27,7 +29,7 @@ import (
 func TestFrontendDeployment(t *testing.T) {
 	z := testZabbix()
 	z.Spec.Frontend = &zabbixv1alpha1.FrontendSpec{
-		Replicas: int32Ptr(2),
+		Replicas: ptr.To[int32](2),
 		Env:      []corev1.EnvVar{{Name: "PHP_MAX_EXECUTION_TIME", Value: "300"}},
 	}
 	dep := FrontendDeployment(z, testDB())

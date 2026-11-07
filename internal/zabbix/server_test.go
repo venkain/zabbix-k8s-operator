@@ -19,15 +19,14 @@ package zabbix
 import (
 	"testing"
 
+	"k8s.io/utils/ptr"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 )
-
-func int32Ptr(i int32) *int32 { return &i }
-func boolPtr(b bool) *bool    { return &b }
 
 func envByName(envs []corev1.EnvVar, name string) (corev1.EnvVar, bool) {
 	for _, e := range envs {
@@ -51,9 +50,9 @@ func testZabbix() *zabbixv1alpha1.Zabbix {
 	return &zabbixv1alpha1.Zabbix{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-zabbix", Namespace: "test-ns", UID: "uid-1"},
 		Spec: zabbixv1alpha1.ZabbixSpec{
-			Version: "8.0",
+			Version: testVersion80,
 			Database: zabbixv1alpha1.DatabaseSpec{
-				CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: "zabbix-db"},
+				CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: testClusterName},
 			},
 		},
 	}
@@ -61,7 +60,7 @@ func testZabbix() *zabbixv1alpha1.Zabbix {
 
 func testDB() *DatabaseEnv {
 	return &DatabaseEnv{
-		Host: "zabbix-db-rw", Port: "5432", User: "zabbix", Password: "secret", DBName: "zabbix",
+		Host: "zabbix-db-rw", Port: "5432", User: testZabbixUser, Password: testPassword, DBName: testZabbixUser,
 	}
 }
 
@@ -99,7 +98,7 @@ func TestServerDeploymentStandalone(t *testing.T) {
 
 func TestServerDeploymentHA(t *testing.T) {
 	z := testZabbix()
-	z.Spec.Server.Replicas = int32Ptr(3)
+	z.Spec.Server.Replicas = ptr.To[int32](3)
 	dep := ServerDeployment(z, testDB())
 
 	if *dep.Spec.Replicas != 3 {
@@ -126,7 +125,7 @@ func TestServerDeploymentHA(t *testing.T) {
 
 func TestServerAgentDisabled(t *testing.T) {
 	z := testZabbix()
-	z.Spec.Server.Agent = &zabbixv1alpha1.AgentSidecarSpec{Enabled: boolPtr(false)}
+	z.Spec.Server.Agent = &zabbixv1alpha1.AgentSidecarSpec{Enabled: new(false)}
 	dep := ServerDeployment(z, testDB())
 	if len(dep.Spec.Template.Spec.Containers) != 1 {
 		t.Errorf("container count = %d, want 1 with agent disabled", len(dep.Spec.Template.Spec.Containers))

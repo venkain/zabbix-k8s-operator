@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 
+	"k8s.io/utils/ptr"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -105,7 +107,7 @@ func TestConvergeUpdateAppliesDeploymentSpec(t *testing.T) {
 	}
 
 	// ...then a spec change on the Zabbix resource must reach the live object.
-	z.Spec.Server.Replicas = int32Ptr(3)
+	z.Spec.Server.Replicas = ptr.To[int32](3)
 	if err := Converge(ctx, c, z, ServerDeployment(z, testDB())); err != nil {
 		t.Fatalf("Converge after change: %v", err)
 	}
@@ -158,7 +160,7 @@ func TestServerReplicasDefault(t *testing.T) {
 		t.Errorf("default server replicas = %d, want 1", got)
 	}
 	z := testZabbix()
-	z.Spec.Server.Replicas = int32Ptr(5)
+	z.Spec.Server.Replicas = ptr.To[int32](5)
 	if got := ServerReplicas(z); got != 5 {
 		t.Errorf("server replicas = %d, want 5", got)
 	}

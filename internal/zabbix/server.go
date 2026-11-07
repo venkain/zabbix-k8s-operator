@@ -35,6 +35,7 @@ const (
 	envAutoHANodeName   = "ZBX_AUTOHANODENAME"
 	envAutoNodeAddress  = "ZBX_AUTONODEADDRESS"
 	envNodeAddressPort  = "ZBX_NODEADDRESSPORT"
+	portNameTrapper     = "zabbix-trapper"
 	serverContainerName = "zabbix-server"
 	agentContainerName  = "agent2"
 )
@@ -68,7 +69,7 @@ func ServerDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deploym
 		ImagePullPolicy: pullPolicy(spec.Image),
 		Env:             env,
 		Ports: []corev1.ContainerPort{
-			{Name: "zabbix-trapper", ContainerPort: ServerPort},
+			{Name: portNameTrapper, ContainerPort: ServerPort},
 		},
 		ReadinessProbe: tcpProbe(ServerPort),
 		LivenessProbe:  tcpProbe(ServerPort),
@@ -119,7 +120,7 @@ func ServerService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: selectorLabels(z.Name, ComponentServer),
 			Ports: []corev1.ServicePort{{
-				Name:       "zabbix-trapper",
+				Name:       portNameTrapper,
 				Port:       ServerPort,
 				TargetPort: intstr.FromInt32(ServerPort),
 			}},
@@ -146,7 +147,7 @@ func ActiveServerService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 		Spec: corev1.ServiceSpec{
 			Selector: sel,
 			Ports: []corev1.ServicePort{{
-				Name:       "zabbix-trapper",
+				Name:       portNameTrapper,
 				Port:       ServerPort,
 				TargetPort: intstr.FromInt32(ServerPort),
 			}},

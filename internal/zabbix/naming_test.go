@@ -22,6 +22,19 @@ import (
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 )
 
+// Shared test literals — constants so repeated strings satisfy goconst
+// and intent stays explicit.
+const (
+	testVersion80   = "8.0"
+	testImageServer = "server-pgsql"
+	testClusterName = "zabbix-db"
+	testAppSecret   = "zabbix-db-app"
+	testHostRW      = "zabbix-db-rw"
+	testPassword    = "secret"
+	// The default Zabbix database user and database name coincide.
+	testZabbixUser = "zabbix"
+)
+
 func TestNames(t *testing.T) {
 	cases := []struct {
 		instance, wantServer, wantFrontend, wantWebService string
@@ -51,13 +64,13 @@ func TestImageFor(t *testing.T) {
 	}{
 		{
 			name:      "release line uses -latest tag",
-			component: "server-pgsql",
-			version:   "8.0",
+			component: testImageServer,
+			version:   testVersion80,
 			want:      "zabbix/zabbix-server-pgsql:ubuntu-8.0-latest",
 		},
 		{
 			name:      "point release pins the exact tag",
-			component: "server-pgsql",
+			component: testImageServer,
 			version:   "8.0.2",
 			want:      "zabbix/zabbix-server-pgsql:ubuntu-8.0.2",
 		},
@@ -69,8 +82,8 @@ func TestImageFor(t *testing.T) {
 		},
 		{
 			name:      "full override",
-			component: "server-pgsql",
-			version:   "8.0",
+			component: testImageServer,
+			version:   testVersion80,
 			override: &zabbixv1alpha1.ImageSpec{
 				Repository: "registry.example.com/mirror/zabbix-server-pgsql",
 				Tag:        "v1-custom",
@@ -80,7 +93,7 @@ func TestImageFor(t *testing.T) {
 		{
 			name:      "tag-only override keeps default repo",
 			component: "agent2",
-			version:   "8.0",
+			version:   testVersion80,
 			override:  &zabbixv1alpha1.ImageSpec{Tag: "ubuntu-8.0.1"},
 			want:      "zabbix/zabbix-agent2:ubuntu-8.0.1",
 		},

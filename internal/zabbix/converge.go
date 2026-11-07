@@ -29,6 +29,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -53,7 +56,7 @@ const fieldManager = "zabbix-k8s-operator"
 // reapplication: the client-side deep-equal there sees defaulted live
 // fields as drift and updates every object on every reconcile (a storm).
 func Converge(ctx context.Context, c client.Client, owner *zabbixv1alpha1.Zabbix, desired client.Object) error {
-	log := log.FromContext(ctx).WithValues("object", fmt.Sprintf("%T", desired), "name", desired.GetName())
+	logger := log.FromContext(ctx).WithValues("object", fmt.Sprintf("%T", desired), "name", desired.GetName())
 
 	// Ownership must be part of the applied configuration so the created
 	// object is owned (and garbage-collected) from birth.
@@ -61,20 +64,35 @@ func Converge(ctx context.Context, c client.Client, owner *zabbixv1alpha1.Zabbix
 		return fmt.Errorf("setting controller reference: %w", err)
 	}
 
-	// Apply patches require the configuration to carry its GVK.
-	switch d := desired.(type) {
+	// Apply configurations carry their GVK explicitly.
+	var gvk schema.GroupVersionKind
+	switch desired.(type) {
 	case *appsv1.Deployment:
-		d.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind("Deployment"))
+		gvk = appsv1.SchemeGroupVersion.WithKind("Deployment")
 	case *corev1.Service:
-		d.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Service"))
+		gvk = corev1.SchemeGroupVersion.WithKind("Service")
 	default:
 		return fmt.Errorf("unsupported owned object type %T", desired)
 	}
+	desired.GetObjectKind().SetGroupVersionKind(gvk)
 
-	if err := c.Patch(ctx, desired, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+	// The new Client.Apply entry point requires an ApplyConfiguration;
+	// unstructured conversion preserves omitted fields as absent, which
+	// is exactly the apply semantics Converge relies on.
+	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(desired)
+	if err != nil {
+		return fmt.Errorf("converting %T to apply configuration: %w", desired, err)
+	}
+	applyCfg := &unstructured.Unstructured{Object: raw}
+	applyCfg.SetGroupVersionKind(gvk)
+
+	if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(applyCfg), &client.ApplyOptions{
+		FieldManager: fieldManager,
+		Force:        new(true),
+	}); err != nil {
 		return err
 	}
-	log.V(1).Info("applied object")
+	logger.V(1).Info("applied object")
 	return nil
 }
 

@@ -32,15 +32,15 @@ import (
 
 func TestDatabaseEnvVars(t *testing.T) {
 	db := &DatabaseEnv{
-		Host: "zabbix-db-rw", Port: "5432", User: "zabbix", Password: "secret", DBName: "zabbix",
+		Host: testHostRW, Port: "5432", User: testZabbixUser, Password: testPassword, DBName: testZabbixUser,
 	}
 
 	serverWant := map[string]string{
-		"DB_SERVER_HOST":    "zabbix-db-rw",
+		"DB_SERVER_HOST":    testHostRW,
 		"DB_SERVER_PORT":    "5432",
-		"POSTGRES_USER":     "zabbix",
-		"POSTGRES_PASSWORD": "secret",
-		"POSTGRES_DB":       "zabbix",
+		"POSTGRES_USER":     testZabbixUser,
+		"POSTGRES_PASSWORD": testPassword,
+		"POSTGRES_DB":       testZabbixUser,
 	}
 	for _, env := range db.ServerEnvVars() {
 		want, ok := serverWant[env.Name]
@@ -57,11 +57,11 @@ func TestDatabaseEnvVars(t *testing.T) {
 	}
 
 	frontendWant := map[string]string{
-		"DB_SERVER_HOST":    "zabbix-db-rw",
+		"DB_SERVER_HOST":    testHostRW,
 		"DB_SERVER_PORT":    "5432",
-		"POSTGRES_USER":     "zabbix",
-		"POSTGRES_PASSWORD": "secret",
-		"POSTGRES_DB":       "zabbix",
+		"POSTGRES_USER":     testZabbixUser,
+		"POSTGRES_PASSWORD": testPassword,
+		"POSTGRES_DB":       testZabbixUser,
 	}
 	for _, env := range db.FrontendEnvVars() {
 		want, ok := frontendWant[env.Name]
@@ -85,34 +85,34 @@ func TestResolveDatabase(t *testing.T) {
 	}
 
 	validSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "zabbix-db-app", Namespace: "test-ns"},
+		ObjectMeta: metav1.ObjectMeta{Name: testAppSecret, Namespace: "test-ns"},
 		Data: map[string][]byte{
-			SecretKeyHost:     []byte("zabbix-db-rw"),
+			SecretKeyHost:     []byte(testHostRW),
 			SecretKeyPort:     []byte("5432"),
-			SecretKeyUser:     []byte("zabbix"),
-			SecretKeyPassword: []byte("secret"),
-			SecretKeyDBName:   []byte("zabbix"),
+			SecretKeyUser:     []byte(testZabbixUser),
+			SecretKeyPassword: []byte(testPassword),
+			SecretKeyDBName:   []byte(testZabbixUser),
 		},
 	}
 
 	t.Run("cnpg reads the cluster app secret", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(validSecret).Build()
-		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: "zabbix-db"}}
+		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: testClusterName}}
 		db, err := ResolveDatabase(context.Background(), c, "test-ns", spec)
 		if err != nil {
 			t.Fatalf("ResolveDatabase: %v", err)
 		}
-		if db.Host != "zabbix-db-rw" || db.Port != "5432" || db.User != "zabbix" || db.Password != "secret" || db.DBName != "zabbix" {
+		if db.Host != testHostRW || db.Port != "5432" || db.User != testZabbixUser || db.Password != testPassword || db.DBName != testZabbixUser {
 			t.Errorf("unexpected resolved database env: %+v", db)
 		}
-		if db.SecretName() != "zabbix-db-app" {
+		if db.SecretName() != testAppSecret {
 			t.Errorf("SecretName() = %q, want zabbix-db-app", db.SecretName())
 		}
 	})
 
 	t.Run("external reads a user-provided secret", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(validSecret).Build()
-		spec := zabbixv1alpha1.DatabaseSpec{External: &zabbixv1alpha1.ExternalDatabaseSpec{SecretName: "zabbix-db-app"}}
+		spec := zabbixv1alpha1.DatabaseSpec{External: &zabbixv1alpha1.ExternalDatabaseSpec{SecretName: testAppSecret}}
 		if _, err := ResolveDatabase(context.Background(), c, "test-ns", spec); err != nil {
 			t.Fatalf("ResolveDatabase: %v", err)
 		}
@@ -120,7 +120,7 @@ func TestResolveDatabase(t *testing.T) {
 
 	t.Run("missing secret is reported", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).Build()
-		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: "zabbix-db"}}
+		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: testClusterName}}
 		_, err := ResolveDatabase(context.Background(), c, "test-ns", spec)
 		if err == nil || !strings.Contains(err.Error(), "not found") {
 			t.Errorf("want not-found error, got %v", err)
@@ -129,9 +129,9 @@ func TestResolveDatabase(t *testing.T) {
 
 	t.Run("missing keys are reported", func(t *testing.T) {
 		partial := validSecret.DeepCopy()
-		partial.Data = map[string][]byte{SecretKeyHost: []byte("zabbix-db-rw")}
+		partial.Data = map[string][]byte{SecretKeyHost: []byte(testHostRW)}
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(partial).Build()
-		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: "zabbix-db"}}
+		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: testClusterName}}
 		_, err := ResolveDatabase(context.Background(), c, "test-ns", spec)
 		if err == nil || !strings.Contains(err.Error(), "missing keys") {
 			t.Errorf("want missing-keys error, got %v", err)

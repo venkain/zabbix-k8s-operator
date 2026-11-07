@@ -25,6 +25,10 @@ import (
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 )
 
+// portNameHTTP names the frontend and web service HTTP ports (container
+// and service port lists).
+const portNameHTTP = "http"
+
 // FrontendDeployment builds the Zabbix frontend (nginx) Deployment. The
 // frontend is stateless; it talks to the database directly and to the
 // server through the active-node Service.
@@ -60,7 +64,7 @@ func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deplo
 						ImagePullPolicy: pullPolicy(frontendImage(spec)),
 						Env:             env,
 						Ports: []corev1.ContainerPort{
-							{Name: "http", ContainerPort: FrontendPort},
+							{Name: portNameHTTP, ContainerPort: FrontendPort},
 						},
 						ReadinessProbe: httpProbe("/"),
 						LivenessProbe:  httpProbe("/"),
@@ -84,7 +88,7 @@ func FrontendService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: selectorLabels(z.Name, ComponentFrontend),
 			Ports: []corev1.ServicePort{{
-				Name:       "http",
+				Name:       portNameHTTP,
 				Port:       80,
 				TargetPort: intstr.FromInt32(FrontendPort),
 			}},
@@ -121,7 +125,7 @@ func WebServiceDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 						Image:           ImageFor("web-service", z.Spec.Version, webServiceImage(spec)),
 						ImagePullPolicy: pullPolicy(webServiceImage(spec)),
 						Ports: []corev1.ContainerPort{
-							{Name: "http", ContainerPort: WebServicePort},
+							{Name: portNameHTTP, ContainerPort: WebServicePort},
 						},
 						ReadinessProbe: tcpProbe(WebServicePort),
 						Resources:      webServiceResources(spec),
@@ -144,7 +148,7 @@ func WebServiceService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: selectorLabels(z.Name, ComponentWebService),
 			Ports: []corev1.ServicePort{{
-				Name:       "http",
+				Name:       portNameHTTP,
 				Port:       WebServicePort,
 				TargetPort: intstr.FromInt32(WebServicePort),
 			}},
