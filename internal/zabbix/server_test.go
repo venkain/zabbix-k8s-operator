@@ -19,10 +19,9 @@ package zabbix
 import (
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -64,23 +63,26 @@ func testDB() *DatabaseEnv {
 	}
 }
 
-func TestServerDeploymentStandalone(t *testing.T) {
+func TestServerStatefulSetStandalone(t *testing.T) {
 	z := testZabbix()
-	dep := ServerDeployment(z, testDB())
+	sts := ServerStatefulSet(z, testDB())
 
-	if *dep.Spec.Replicas != 1 {
-		t.Errorf("replicas = %d, want 1", *dep.Spec.Replicas)
+	if *sts.Spec.Replicas != 1 {
+		t.Errorf("replicas = %d, want 1", *sts.Spec.Replicas)
 	}
-	if dep.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
-		t.Errorf("strategy = %q, want Recreate (per-pod HA identity)", dep.Spec.Strategy.Type)
+	if sts.Spec.ServiceName != ServerName(z.Name) {
+		t.Errorf("serviceName = %q, want %q (governing service)", sts.Spec.ServiceName, ServerName(z.Name))
+	}
+	if sts.Spec.Selector.MatchLabels[ComponentLabel] != ComponentServer {
+		t.Errorf("selector = %v, want the component selector", sts.Spec.Selector)
 	}
 
-	podLabels := dep.Spec.Template.Labels
+	podLabels := sts.Spec.Template.Labels
 	if podLabels[HARoleLabel] != HARoleActive {
 		t.Errorf("standalone pod labels must mark the pod %s=%s, got %v", HARoleLabel, HARoleActive, podLabels)
 	}
 
-	server := dep.Spec.Template.Spec.Containers[0]
+	server := sts.Spec.Template.Spec.Containers[0]
 	for _, ha := range []string{"ZBX_AUTOHANODENAME", "ZBX_AUTONODEADDRESS", "ZBX_NODEADDRESSPORT"} {
 		if _, ok := envByName(server.Env, ha); ok {
 			t.Errorf("standalone server must not set %s", ha)
@@ -91,24 +93,24 @@ func TestServerDeploymentStandalone(t *testing.T) {
 	}
 
 	// Agent 2 sidecar on by default.
-	if len(dep.Spec.Template.Spec.Containers) != 2 {
-		t.Fatalf("container count = %d, want 2 (server + agent2)", len(dep.Spec.Template.Spec.Containers))
+	if len(sts.Spec.Template.Spec.Containers) != 2 {
+		t.Fatalf("container count = %d, want 2 (server + agent2)", len(sts.Spec.Template.Spec.Containers))
 	}
 }
 
-func TestServerDeploymentHA(t *testing.T) {
+func TestServerStatefulSetHA(t *testing.T) {
 	z := testZabbix()
 	z.Spec.Server.Replicas = ptr.To[int32](3)
-	dep := ServerDeployment(z, testDB())
+	sts := ServerStatefulSet(z, testDB())
 
-	if *dep.Spec.Replicas != 3 {
-		t.Errorf("replicas = %d, want 3", *dep.Spec.Replicas)
+	if *sts.Spec.Replicas != 3 {
+		t.Errorf("replicas = %d, want 3", *sts.Spec.Replicas)
 	}
-	if dep.Spec.Template.Labels[HARoleLabel] != "" {
-		t.Errorf("HA pod template must not carry the HA-role label (it is maintained per pod), got %v", dep.Spec.Template.Labels)
+	if sts.Spec.Template.Labels[HARoleLabel] != "" {
+		t.Errorf("HA pod template must not carry the HA-role label (it is maintained per pod), got %v", sts.Spec.Template.Labels)
 	}
 
-	server := dep.Spec.Template.Spec.Containers[0]
+	server := sts.Spec.Template.Spec.Containers[0]
 	env, _ := envByName(server.Env, "ZBX_AUTOHANODENAME")
 	if env.Value != "hostname" {
 		t.Errorf("ZBX_AUTOHANODENAME = %q, want hostname", env.Value)
@@ -126,9 +128,9 @@ func TestServerDeploymentHA(t *testing.T) {
 func TestServerAgentDisabled(t *testing.T) {
 	z := testZabbix()
 	z.Spec.Server.Agent = &zabbixv1alpha1.AgentSidecarSpec{Enabled: new(false)}
-	dep := ServerDeployment(z, testDB())
-	if len(dep.Spec.Template.Spec.Containers) != 1 {
-		t.Errorf("container count = %d, want 1 with agent disabled", len(dep.Spec.Template.Spec.Containers))
+	sts := ServerStatefulSet(z, testDB())
+	if len(sts.Spec.Template.Spec.Containers) != 1 {
+		t.Errorf("container count = %d, want 1 with agent disabled", len(sts.Spec.Template.Spec.Containers))
 	}
 }
 
@@ -136,11 +138,11 @@ func TestAgentEnvOrdering(t *testing.T) {
 	// $(POD_NAME) expansion only sees variables defined earlier, so
 	// POD_NAME must precede ZBX_HOSTNAME.
 	z := testZabbix()
-	dep := ServerDeployment(z, testDB())
+	sts := ServerStatefulSet(z, testDB())
 	var agent *corev1.Container
-	for i := range dep.Spec.Template.Spec.Containers {
-		if dep.Spec.Template.Spec.Containers[i].Name == agentContainerName {
-			agent = &dep.Spec.Template.Spec.Containers[i]
+	for i := range sts.Spec.Template.Spec.Containers {
+		if sts.Spec.Template.Spec.Containers[i].Name == agentContainerName {
+			agent = &sts.Spec.Template.Spec.Containers[i]
 		}
 	}
 	if agent == nil {
@@ -166,8 +168,8 @@ func TestWebServiceEnv(t *testing.T) {
 	z := testZabbix()
 	z.Spec.WebService = &zabbixv1alpha1.WebServiceSpec{}
 
-	dep := ServerDeployment(z, testDB())
-	server := dep.Spec.Template.Spec.Containers[0]
+	sts := ServerStatefulSet(z, testDB())
+	server := sts.Spec.Template.Spec.Containers[0]
 	env, _ := envByName(server.Env, "ZBX_WEBSERVICEURL")
 	if env.Value != "http://test-zabbix-web-service:10053/report" {
 		t.Errorf("ZBX_WEBSERVICEURL = %q, want http://test-zabbix-web-service:10053/report", env.Value)
@@ -176,7 +178,7 @@ func TestWebServiceEnv(t *testing.T) {
 		t.Error("ZBX_STARTREPORTWRITERS missing when web service is deployed")
 	}
 
-	noWS := ServerDeployment(testZabbix(), testDB())
+	noWS := ServerStatefulSet(testZabbix(), testDB())
 	if _, ok := envByName(noWS.Spec.Template.Spec.Containers[0].Env, "ZBX_WEBSERVICEURL"); ok {
 		t.Error("ZBX_WEBSERVICEURL must not be set when no web service is configured")
 	}

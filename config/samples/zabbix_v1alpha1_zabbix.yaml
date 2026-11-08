@@ -8,6 +8,14 @@ spec:
   database:
     cnpg:
       clusterName: zabbix-db
+  # api is required when server.replicas > 1: the operator maintains
+  # active-node routing from the HA node registry via the Zabbix API.
+  # Create a token in the frontend (Users → API tokens) and store it in
+  # a Secret with the key "token".
+  api:
+    tokenSecretRef:
+      name: zbx-api-token
+      key: token
   server:
     replicas: 1
     agent:

@@ -59,9 +59,12 @@ const (
 	ComponentWebService = "web-service"
 
 	// Container ports (official images).
-	ServerPort     = int32(10051)
-	FrontendPort   = int32(8080) // nginx in the official image listens on 8080
-	WebServicePort = int32(10053)
+	ServerPort   = int32(10051)
+	FrontendPort = int32(8080) // nginx in the official image listens on 8080
+	// frontendServicePort is the port the frontend Service exposes
+	// (targets FrontendPort); the API client routes through it.
+	frontendServicePort = int32(80)
+	WebServicePort      = int32(10053)
 )
 
 // Names of the derived objects for a Zabbix resource named <name>.

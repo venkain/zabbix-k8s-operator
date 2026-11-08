@@ -69,6 +69,8 @@ func Converge(ctx context.Context, c client.Client, owner *zabbixv1alpha1.Zabbix
 	switch desired.(type) {
 	case *appsv1.Deployment:
 		gvk = appsv1.SchemeGroupVersion.WithKind("Deployment")
+	case *appsv1.StatefulSet:
+		gvk = appsv1.SchemeGroupVersion.WithKind("StatefulSet")
 	case *corev1.Service:
 		gvk = corev1.SchemeGroupVersion.WithKind("Service")
 	default:
@@ -97,9 +99,13 @@ func Converge(ctx context.Context, c client.Client, owner *zabbixv1alpha1.Zabbix
 }
 
 // ConvergeAll creates/updates every object the Zabbix resource owns.
-func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) error {
+// server is the pre-shaped server StatefulSet — the steady-state builder
+// (ServerStatefulSet) or a transition shape (ServerWorkloadForRollout).
+// Passing it in keeps the rollout phase decision in one place and avoids
+// applying two different server shapes in a single reconcile.
+func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix, db *DatabaseEnv, server *appsv1.StatefulSet) error {
 	objects := []client.Object{
-		ServerDeployment(z, db),
+		server,
 		ServerService(z),
 		ActiveServerService(z),
 		FrontendDeployment(z, db),
@@ -140,6 +146,19 @@ func ComponentIsReady(ctx context.Context, c client.Client, namespace, name stri
 		return false, err
 	}
 	return dep.Status.ReadyReplicas >= desired, nil
+}
+
+// StatefulSetIsReady reports whether the given StatefulSet has at least
+// the desired number of ready replicas.
+func StatefulSetIsReady(ctx context.Context, c client.Client, namespace, name string, desired int32) (bool, error) {
+	var sts appsv1.StatefulSet
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return sts.Status.ReadyReplicas >= desired, nil
 }
 
 // SetCondition applies a condition on the Zabbix status.

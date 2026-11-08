@@ -40,28 +40,41 @@ const (
 	agentContainerName  = "agent2"
 )
 
-// ServerDeployment builds the server Deployment. replicas > 1 enables
-// native HA: each pod joins the HA cluster with its own hostname as node
-// name, and all replicas share the selected database.
-func ServerDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deployment {
+// ServerStatefulSet builds the server StatefulSet for the configured
+// spec (steady state). The rollout-phase variant ServerWorkloadForRollout
+// shapes the same statefulset during registry transitions.
+func ServerStatefulSet(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.StatefulSet {
+	return serverStatefulSet(z, db, ServerReplicas(z), ServerReplicas(z) > 1)
+}
+
+// serverStatefulSet builds the server StatefulSet with explicit HA
+// identity and replica control. StatefulSet (not Deployment) because HA
+// node identity must be STABLE: with ZBX_AUTOHANODENAME=hostname the pod
+// name is the HA node name, and a restarted Deployment pod would get a
+// new random name — registering a new ha_node registry entry while the
+// old one lingers as unavailable forever. StatefulSet ordinals keep the
+// same name across restarts, so the registry entry is reused instead of
+// leaked. Note that HA identity and replica count are decoupled: HA-mode
+// templates can run with a single replica (scale down before the
+// standalone flip, ServerRolloutPhase), and standalone templates must
+// never carry identity env.
+//
+// haIdentity marks the pod template as a HA participant; when false the
+// single pod is standalone and the pod template stamps the HA-role label
+// as active (no API access needed for the -active Service). HA templates
+// never stamp the label: the per-pod operator maintenance derives it
+// from the official hanode.get registry.
+func serverStatefulSet(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv, replicas int32, haIdentity bool) *appsv1.StatefulSet {
 	spec := &z.Spec.Server
 
-	replicas := int32(1)
-	if spec.Replicas != nil {
-		replicas = *spec.Replicas
-	}
-
 	podLabels := commonLabels(z.Name, ComponentServer)
-	if replicas == 1 {
-		// Standalone mode: the single pod is the active node by
-		// definition. Stamping the HA-role label keeps the active-node
-		// Service functional before per-pod HA maintenance exists
-		// (replicas > 1 requires the HA reconcile slice, which maintains
-		// the label per pod from the Zabbix hanode state).
+	if !haIdentity {
 		podLabels[HARoleLabel] = HARoleActive
 	}
-	env := append(db.ServerEnvVars(), serverHAEnv(replicas)...)
-	env = append(env, webServiceEnv(z)...)
+	env := append(db.ServerEnvVars(), webServiceEnv(z)...)
+	if haIdentity {
+		env = append(env, serverHAEnv()...)
+	}
 
 	serverContainer := corev1.Container{
 		Name:            serverContainerName,
@@ -71,8 +84,8 @@ func ServerDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deploym
 		Ports: []corev1.ContainerPort{
 			{Name: portNameTrapper, ContainerPort: ServerPort},
 		},
-		ReadinessProbe: tcpProbe(ServerPort),
-		LivenessProbe:  tcpProbe(ServerPort),
+		ReadinessProbe: serverReadyProbe(),
+		LivenessProbe:  serverLivenessProbe(),
 		Resources:      spec.Resources,
 		// The server entrypoint prepares the database schema and node
 		// identity on startup; give it room to finish cleanly.
@@ -84,17 +97,24 @@ func ServerDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deploym
 		containers = append(containers, agentSidecar(z, spec.Agent))
 	}
 
-	return &appsv1.Deployment{
+	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ServerName(z.Name),
 			Namespace: z.Namespace,
 			Labels:    podLabels,
 		},
-		Spec: appsv1.DeploymentSpec{
-			// Recreate: HA node identity is per-pod; rolling replacement
-			// would briefly double-declare node names.
+		Spec: appsv1.StatefulSetSpec{
 			Replicas: &replicas,
-			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+			// The governing service does not need per-pod DNS (traffic
+			// reaches the server through the -active Service), but the
+			// StatefulSet requires a service name.
+			ServiceName: ServerName(z.Name),
+			// OrderedReady (default): predecessors are Running and Ready
+			// before the next ordinal starts. This is the standalone→HA
+			// sequencing guarantee — the first pod re-registers the
+			// registry entry (the clean stop of the replaced pod marks
+			// the standalone entry inactive), and only then the next
+			// ordinal joins as standby.
 			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(z.Name, ComponentServer)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
@@ -181,14 +201,15 @@ func webServiceEnv(z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
 	}
 }
 
-// serverHAEnv returns the HA identity env when replicas > 1 (official
-// entrypoint: ZBX_AUTOHANODENAME=hostname makes each pod register under
-// its own hostname; ZBX_AUTONODEADDRESS=hostname advertises the hostname
-// and ZBX_NODEADDRESSPORT the port as the node address).
-func serverHAEnv(replicas int32) []corev1.EnvVar {
-	if replicas <= 1 {
-		return nil
-	}
+// serverHAEnv returns the env marking the pod as a HA participant
+// (official entrypoint: ZBX_AUTOHANODENAME=hostname makes each pod
+// register under its own hostname; ZBX_AUTONODEADDRESS=hostname
+// advertises the hostname and ZBX_NODEADDRESSPORT the port as the node
+// address). Unconditional: the caller decides whether the template is a
+// HA participant at all (standalone templates must never carry it — the
+// server refuses to change mode to HA while a standalone node is
+// active).
+func serverHAEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: envAutoHANodeName, Value: "hostname"},
 		{Name: envAutoNodeAddress, Value: "hostname"},
@@ -237,6 +258,8 @@ func pullPolicy(spec *zabbixv1alpha1.ImageSpec) corev1.PullPolicy {
 	return corev1.PullIfNotPresent
 }
 
+// tcpProbe probes a TCP port (shared by the frontend and web service
+// deployments).
 func tcpProbe(port int32) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -244,6 +267,46 @@ func tcpProbe(port int32) *corev1.Probe {
 		},
 		InitialDelaySeconds: 30,
 		PeriodSeconds:       10,
+	}
+}
+
+// serverReadyProbe reports pod readiness as HA cluster membership: the
+// zabbix_server process runs. A TCP probe against the trapper port
+// cannot be used — only the active HA node accepts trapper connections
+// (validated in the lab: a standby server closes port 10051 and the
+// control socket refuses runtime commands, so a TCP probe liveness
+// killed every standby pod about a minute after it entered standby).
+// The active/standby ROLE is not the pod's concern: routing is driven
+// by the operator-maintained HA-role label on the -active Service.
+func serverReadyProbe() *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"pgrep", "zabbix_server"},
+			},
+		},
+		// The entrypoint prepares the database schema before it starts
+		// the server process.
+		InitialDelaySeconds: 15,
+		PeriodSeconds:       10,
+		FailureThreshold:    3,
+	}
+}
+
+// serverLivenessProbe restarts the container after the zabbix_server
+// process has been gone for several minutes — long enough not to
+// interfere with a schema-level upgrade or re-registration, short
+// enough to recover from a hung process without operator intervention.
+func serverLivenessProbe() *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"pgrep", "zabbix_server"},
+			},
+		},
+		InitialDelaySeconds: 120,
+		PeriodSeconds:       30,
+		FailureThreshold:    5,
 	}
 }
 

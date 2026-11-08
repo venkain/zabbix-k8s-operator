@@ -112,6 +112,18 @@ type AgentSidecarSpec struct {
 	Image *ImageSpec `json:"image,omitempty"`
 }
 
+// APISpec configures how the operator reaches the Zabbix API (served by
+// the frontend at /api_jsonrpc.php) for control-plane operations such as
+// server HA node state observation.
+type APISpec struct {
+	// tokenSecretRef references a Secret (same namespace) whose key holds
+	// a Zabbix API token. The token must belong to a user with permission
+	// to read HA node state (hanode.get). Create it in the frontend under
+	// Users → API tokens. Required when server.replicas > 1.
+	// +required
+	TokenSecretRef corev1.SecretKeySelector `json:"tokenSecretRef"`
+}
+
 // FrontendSpec configures the Zabbix frontend.
 type FrontendSpec struct {
 	// replicas is the number of frontend pods.
@@ -151,6 +163,7 @@ type WebServiceSpec struct {
 }
 
 // ZabbixSpec defines the desired state of Zabbix.
+// +kubebuilder:validation:XValidation:message="api.tokenSecretRef is required when server.replicas > 1: HA mode needs the Zabbix API for active-node routing",rule="!(has(self.server) && has(self.server.replicas) && self.server.replicas > 1) || (has(self.api) && has(self.api.tokenSecretRef))"
 type ZabbixSpec struct {
 	// version is the Zabbix release to deploy (e.g. "8.0" or "7.0"). It
 	// selects the official container image tags and must match the
@@ -166,6 +179,12 @@ type ZabbixSpec struct {
 	// server configures the Zabbix server.
 	// +optional
 	Server ServerSpec `json:"server,omitempty"`
+
+	// api configures the operator's access to the Zabbix API. Required
+	// when the server runs in HA mode (server.replicas > 1): the operator
+	// maintains active-node routing from the HA node state.
+	// +optional
+	API *APISpec `json:"api,omitempty"`
 
 	// frontend configures the Zabbix frontend. Deployed by default.
 	// +optional
@@ -184,8 +203,9 @@ type HANodeStatus struct {
 	Name string `json:"name"`
 
 	// status is the Zabbix-reported node status: active, standby,
-	// unavailable, or stopped.
-	// +kubebuilder:validation:Enum=active;standby;unavailable;stopped
+	// unavailable, stopped, or unknown (a status code outside the
+	// documented registry values; never routed to the active Service).
+	// +kubebuilder:validation:Enum=active;standby;unavailable;stopped;unknown
 	// +required
 	Status string `json:"status"`
 

@@ -55,7 +55,7 @@ var _ = Describe("Zabbix Controller", func() {
 			return &zabbixv1alpha1.Zabbix{
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: resourceNamespace},
 				Spec: zabbixv1alpha1.ZabbixSpec{
-					Version: "8.0",
+					Version: haTestVersion,
 					Database: zabbixv1alpha1.DatabaseSpec{
 						CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: "zabbix-db"},
 					},
@@ -82,11 +82,11 @@ var _ = Describe("Zabbix Controller", func() {
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("expecting the server and frontend deployments to exist, owned by the resource")
-			serverDep := &appsv1.Deployment{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-server", Namespace: resourceNamespace}, serverDep)).Should(Succeed())
-			Expect(serverDep.OwnerReferences).To(HaveLen(1))
-			Expect(serverDep.OwnerReferences[0].Kind).To(Equal("Zabbix"))
+			By("expecting the server statefulset and frontend deployment to exist, owned by the resource")
+			serverSts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-server", Namespace: resourceNamespace}, serverSts)).Should(Succeed())
+			Expect(serverSts.OwnerReferences).To(HaveLen(1))
+			Expect(serverSts.OwnerReferences[0].Kind).To(Equal("Zabbix"))
 
 			frontendDep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-frontend", Namespace: resourceNamespace}, frontendDep)).Should(Succeed())
@@ -113,9 +113,9 @@ var _ = Describe("Zabbix Controller", func() {
 
 			By("reconciling again without writes (idempotency — no apply storm)")
 			serverRV := func() string {
-				dep := &appsv1.Deployment{}
-				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-server", Namespace: resourceNamespace}, dep)).Should(Succeed())
-				return dep.ResourceVersion
+				sts := &appsv1.StatefulSet{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-server", Namespace: resourceNamespace}, sts)).Should(Succeed())
+				return sts.ResourceVersion
 			}
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())

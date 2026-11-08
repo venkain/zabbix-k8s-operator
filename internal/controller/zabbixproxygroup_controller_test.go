@@ -55,7 +55,7 @@ var _ = Describe("ZabbixProxyGroup Controller", func() {
 						Namespace: resourceNamespace,
 					},
 					Spec: zabbixv1alpha1.ZabbixProxyGroupSpec{
-						Version:   "8.0",
+						Version:   haTestVersion,
 						GroupName: "test-group",
 						ServerRef: "test-zabbix",
 					},

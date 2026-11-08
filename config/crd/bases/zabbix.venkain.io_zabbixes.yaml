@@ -60,6 +60,43 @@ spec:
           spec:
             description: spec defines the desired state of Zabbix
             properties:
+              api:
+                description: |-
+                  api configures the operator's access to the Zabbix API. Required
+                  when the server runs in HA mode (server.replicas > 1): the operator
+                  maintains active-node routing from the HA node state.
+                properties:
+                  tokenSecretRef:
+                    description: |-
+                      tokenSecretRef references a Secret (same namespace) whose key holds
+                      a Zabbix API token. The token must belong to a user with permission
+                      to read HA node state (hanode.get). Create it in the frontend under
+                      Users → API tokens. Required when server.replicas > 1.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - tokenSecretRef
+                type: object
               database:
                 description: database selects the PostgreSQL database backing this
                   deployment.
@@ -559,6 +596,11 @@ spec:
             - database
             - version
             type: object
+            x-kubernetes-validations:
+            - message: 'api.tokenSecretRef is required when server.replicas > 1: HA
+                mode needs the Zabbix API for active-node routing'
+              rule: '!(has(self.server) && has(self.server.replicas) && self.server.replicas
+                > 1) || (has(self.api) && has(self.api.tokenSecretRef))'
           status:
             description: status defines the observed state of Zabbix
             properties:
@@ -658,12 +700,14 @@ spec:
                         status:
                           description: |-
                             status is the Zabbix-reported node status: active, standby,
-                            unavailable, or stopped.
+                            unavailable, stopped, or unknown (a status code outside the
+                            documented registry values; never routed to the active Service).
                           enum:
                           - active
                           - standby
                           - unavailable
                           - stopped
+                          - unknown
                           type: string
                       required:
                       - name

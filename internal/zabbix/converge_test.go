@@ -96,25 +96,25 @@ func TestConvergeUpdateAppliesSpecAndPreservesUnmanagedFields(t *testing.T) {
 	}
 }
 
-func TestConvergeUpdateAppliesDeploymentSpec(t *testing.T) {
+func TestConvergeUpdateAppliesStatefulSetSpec(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
 	z := testZabbix()
 
-	// First converge creates the deployment...
-	if err := Converge(ctx, c, z, ServerDeployment(z, testDB())); err != nil {
+	// First converge creates the statefulset...
+	if err := Converge(ctx, c, z, ServerStatefulSet(z, testDB())); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 
 	// ...then a spec change on the Zabbix resource must reach the live object.
 	z.Spec.Server.Replicas = ptr.To[int32](3)
-	if err := Converge(ctx, c, z, ServerDeployment(z, testDB())); err != nil {
+	if err := Converge(ctx, c, z, ServerStatefulSet(z, testDB())); err != nil {
 		t.Fatalf("Converge after change: %v", err)
 	}
 
-	var live appsv1.Deployment
+	var live appsv1.StatefulSet
 	if err := c.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: ServerName(z.Name)}, &live); err != nil {
-		t.Fatalf("get converged deployment: %v", err)
+		t.Fatalf("get converged statefulset: %v", err)
 	}
 	if *live.Spec.Replicas != 3 {
 		t.Errorf("live replicas = %d, want 3", *live.Spec.Replicas)
@@ -127,7 +127,7 @@ func TestConvergeAllCreatesTheStack(t *testing.T) {
 	z := testZabbix()
 	z.Spec.WebService = &zabbixv1alpha1.WebServiceSpec{}
 
-	if err := ConvergeAll(ctx, c, z, testDB()); err != nil {
+	if err := ConvergeAll(ctx, c, z, testDB(), ServerStatefulSet(z, testDB())); err != nil {
 		t.Fatalf("ConvergeAll: %v", err)
 	}
 
@@ -143,8 +143,13 @@ func TestConvergeAllCreatesTheStack(t *testing.T) {
 			t.Errorf("service %s missing after ConvergeAll: %v", key.Name, err)
 		}
 	}
+	// The server is a StatefulSet (stable HA node identity); the rest are
+	// Deployments.
+	var sts appsv1.StatefulSet
+	if err := c.Get(ctx, client.ObjectKey{Name: ServerName(z.Name), Namespace: z.Namespace}, &sts); err != nil {
+		t.Errorf("statefulset %s missing after ConvergeAll: %v", ServerName(z.Name), err)
+	}
 	for _, key := range []client.ObjectKey{
-		{Name: ServerName(z.Name), Namespace: z.Namespace},
 		{Name: FrontendName(z.Name), Namespace: z.Namespace},
 		{Name: WebServiceName(z.Name), Namespace: z.Namespace},
 	} {
