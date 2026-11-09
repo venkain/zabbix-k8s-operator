@@ -22,3 +22,8 @@ vendor/
 
 # Local environment files
 .env
+
+# OpenCode harness (machine-local, not published)
+.opencode/
+opencode.json
+opencode.jsonc

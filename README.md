@@ -5,8 +5,9 @@ A Kubernetes operator that deploys and manages production-grade
 availability, frontend, web service, and proxies — on a PostgreSQL database
 managed by [CloudNativePG](https://cloudnative-pg.io) or provided externally.
 
-**Status: pre-scaffold (design phase).** No operator code exists yet; see
-[Roadmap](#roadmap).
+**Status: development.** The v1alpha1 API and the core reconcile loops are
+implemented and lab-validated on kind (see
+[Roadmap](#roadmap)); no release has been published yet.
 
 ## What it does
 
@@ -44,8 +45,8 @@ Decisions are tracked with rationale in
 ## Roadmap
 
 - [x] **Phase 0 — requirements & research** (research material maintained separately)
-- [ ] **Phase 1 — scaffold**: kubebuilder project, CRD design, core reconcile loops
-- [ ] **Phase 2 — database**: CloudNativePG integration, external-DB mode
+- [x] **Phase 1 — scaffold**: kubebuilder project, CRD design, core reconcile loops
+- [x] **Phase 2 — database**: CloudNativePG integration, external-DB mode
 - [ ] **Phase 3 — production hardening**: HA topologies, probes, PDBs, metrics, e2e suite on kind
 - [ ] **Phase 4 — publish**: GitHub release, install bundle, docs site
 
