@@ -30,15 +30,13 @@ import (
 
 // Proxy env names (official image interface, verified against the 7.0/8.0
 // entrypoints): ZBX_PROXYMODE selects active mode (required for proxy
-// groups); ZBX_HOSTNAMEITEM resolves the proxy identity at runtime via the
-// system.hostname item — with a StatefulSet this is the pod name, giving
-// every group member its own stable identity; ZBX_USE_NODE_NAME_AS_DB_NAME
-// names the embedded SQLite database after the pod so per-ordinal members
-// do not share a database file.
+// groups) and ZBX_USE_NODE_NAME_AS_DB_NAME names the embedded SQLite
+// database after the pod so per-ordinal members do not share a database
+// file. The proxy name itself comes from ZBX_HOSTNAME (downward API,
+// see the container env comment).
 const (
-	envProxyMode    = "ZBX_PROXYMODE"
-	envHostnameItem = "ZBX_HOSTNAMEITEM"
-	envNodeNameDB   = "ZBX_USE_NODE_NAME_AS_DB_NAME"
+	envProxyMode  = "ZBX_PROXYMODE"
+	envNodeNameDB = "ZBX_USE_NODE_NAME_AS_DB_NAME"
 
 	portNameProxyTrapper = "zabbix-trapper"
 	proxyContainerName   = "zabbix-proxy"
@@ -73,10 +71,11 @@ func ProxyRecordAddress(instance string, ordinal int32, namespace string) string
 
 // ProxyStatefulSet builds the proxy-group member StatefulSet. A
 // StatefulSet (not a Deployment) because membership identity is per
-// ordinal: with ZBX_HOSTNAMEITEM=system.hostname the pod name is the
-// Zabbix proxy name and must stay stable across restarts so it keeps
-// matching the proxy record the operator created server-side, and the
-// per-ordinal headless DNS keeps the registered local_address valid.
+// ordinal: the pod name is the Zabbix proxy name (delivered as
+// ZBX_HOSTNAME through the downward API) and must stay stable across
+// restarts so it keeps matching the proxy record the operator created
+// server-side, and the per-ordinal headless DNS keeps the registered
+// local_address valid.
 func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *zabbixv1alpha1.Zabbix) *appsv1.StatefulSet {
 	podLabels := commonLabels(pg.Name, ComponentProxy)
 
@@ -95,12 +94,16 @@ func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *za
 			// reaches the HA leader after a failover.
 			{Name: envServerHost, Value: fmt.Sprintf("%s.%s.svc", ActiveServerService(z).Name, z.Namespace)},
 			{Name: envServerPort, Value: fmt.Sprintf("%d", ServerPort)},
-			// Per-pod identity: the daemon resolves its name through the
-			// system.hostname item at startup, so <instance>-proxy-<n>
-			// identifies itself. ZBX_HOSTNAME is deliberately NOT set —
-			// the entrypoint writes HostnameItem only when Hostname is
-			// empty.
-			{Name: envHostnameItem, Value: "system.hostname"},
+			// Per-pod identity: the pod name is the Zabbix proxy name —
+			// <instance>-proxy-<n> — delivered through the downward API
+			// instead of HostnameItem=system.hostname: the 8.0 image
+			// entrypoint writes an explicitly empty Hostname alongside
+			// the item, which the daemon rejects ("invalid Hostname
+			// configuration parameter '': name is empty"; live-caught).
+			// StatefulSet pod names are stable across restarts, so the
+			// identity keeps matching the proxy record the operator
+			// created server-side.
+			{Name: "ZBX_HOSTNAME", ValueFrom: fieldRef("metadata.name")},
 			// Separate embedded SQLite database per member.
 			{Name: envNodeNameDB, Value: "true"},
 		},

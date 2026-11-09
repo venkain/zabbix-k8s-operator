@@ -227,7 +227,7 @@ func syncGroupMembers(ctx context.Context, r *ZabbixProxyGroupReconciler, endpoi
 
 	liveByID := make(map[string]zabbix.ProxyMember, len(members))
 	for _, m := range members {
-		liveByID[m.Host] = m
+		liveByID[m.Name] = m
 	}
 
 	// Deletes first: scaled-down or renamed members that still exist
@@ -325,7 +325,7 @@ func (r *ZabbixProxyGroupReconciler) deleteServerSideGroup(ctx context.Context, 
 	}
 	var memberIDs []string
 	for _, m := range members {
-		if ownedProxyHost(pg.Name, m.Host) {
+		if ownedProxyHost(pg.Name, m.Name) {
 			memberIDs = append(memberIDs, strconv.FormatInt(m.ID, 10))
 		}
 	}

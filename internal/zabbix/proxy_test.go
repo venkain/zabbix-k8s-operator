@@ -113,11 +113,18 @@ func TestProxyStatefulSetBuilder(t *testing.T) {
 	if env["ZBX_SERVER_PORT"] != "10051" {
 		t.Errorf("ZBX_SERVER_PORT = %q", env["ZBX_SERVER_PORT"])
 	}
-	if env["ZBX_HOSTNAMEITEM"] != "system.hostname" {
-		t.Errorf("ZBX_HOSTNAMEITEM = %q, want system.hostname", env["ZBX_HOSTNAMEITEM"])
-	}
-	if _, set := env["ZBX_HOSTNAME"]; set {
-		t.Errorf("ZBX_HOSTNAME must not be set: HostnameItem identity requires an empty Hostname")
+	// Identity: ZBX_HOSTNAME must come from the downward API (the pod
+	// name), and HostnameItem must be absent (the 8.0 image combo of
+	// empty Hostname + HostnameItem is rejected by the daemon).
+	for _, e := range sts.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "ZBX_HOSTNAME" {
+			if e.ValueFrom == nil || e.ValueFrom.FieldRef == nil || e.ValueFrom.FieldRef.FieldPath != "metadata.name" {
+				t.Errorf("ZBX_HOSTNAME = %+v, want fieldRef metadata.name", e)
+			}
+		}
+		if e.Name == "ZBX_HOSTNAMEITEM" {
+			t.Errorf("ZBX_HOSTNAMEITEM must not be set")
+		}
 	}
 	if env["ZBX_USE_NODE_NAME_AS_DB_NAME"] != "true" {
 		t.Errorf("ZBX_USE_NODE_NAME_AS_DB_NAME = %q", env["ZBX_USE_NODE_NAME_AS_DB_NAME"])

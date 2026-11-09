@@ -156,10 +156,11 @@ type hanodeResult struct {
 }
 
 // outputExtend requests the full object output on *.get methods;
-// paramOutput is the corresponding request parameter name.
+// paramOutput/paramName are the corresponding request parameter names.
 const (
 	outputExtend = "extend"
 	paramOutput  = "output"
+	paramName    = "name"
 )
 
 // FetchHANodes queries the HA node registry via hanode.get. The endpoint
@@ -299,10 +300,11 @@ func parseID(ids []string, field string) (int64, error) {
 }
 
 // ProxyMember is one proxy record as returned by proxy.get, restricted
-// to the fields the group membership maintenance reads and writes.
+// to the fields the group membership maintenance reads and writes. The
+// identity property is "name" in 7.0+ (the pre-7.0 "host" name is gone).
 type ProxyMember struct {
 	ID            int64
-	Host          string
+	Name          string
 	GroupID       int64
 	OperatingMode int64
 	LocalAddress  string
@@ -312,7 +314,7 @@ type ProxyMember struct {
 // proxyMemberResult is one proxy.get entry in API wire format.
 type proxyMemberResult struct {
 	ID            int64  `json:"proxyid,string"`
-	Host          string `json:"host"`
+	Name          string `json:"name"`
 	GroupID       int64  `json:"proxy_groupid,string"`
 	OperatingMode int64  `json:"operating_mode,string"`
 	LocalAddress  string `json:"local_address"`
@@ -337,12 +339,13 @@ func FetchGroupProxies(ctx context.Context, httpClient *http.Client, endpoint, t
 }
 
 // CreateProxyMember registers the server-side proxy record that makes a
-// daemon join the group: operating_mode=0 (active), the group assignment,
-// and the local_address active agents connect to (official proxy object
+// daemon join the group: name (the pod name — the identity the daemon
+// self-reports), operating_mode=0 (active), the group assignment, and
+// the local_address active agents connect to (official proxy object
 // requirements for group members).
-func CreateProxyMember(ctx context.Context, httpClient *http.Client, endpoint, token string, groupID int64, host, localAddress, localPort string) (int64, error) {
+func CreateProxyMember(ctx context.Context, httpClient *http.Client, endpoint, token string, groupID int64, name, localAddress, localPort string) (int64, error) {
 	created, err := callJSONRPC[idResult](ctx, httpClient, endpoint, token, "proxy.create", map[string]any{
-		"host":           host,
+		paramName:        name,
 		"operating_mode": 0,
 		"proxy_groupid":  intToStringID(groupID),
 		"local_address":  localAddress,

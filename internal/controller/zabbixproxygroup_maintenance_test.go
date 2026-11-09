@@ -213,8 +213,8 @@ func pgLiveResponses() map[string]string {
 	return map[string]string{
 		rpcPGGroupGet: `{"jsonrpc":"2.0","result":[{"proxy_groupid":"7","name":"edge-group","failover_delay":"1m","min_online":"1","state":"3"}],"id":1}`,
 		rpcPGProxyGet: `{"jsonrpc":"2.0","result":[
-			{"proxyid":"11","host":"edge-proxy-0","proxy_groupid":"7","operating_mode":"0","local_address":"edge-proxy-0.edge-proxy.pg-ns.svc","local_port":"10051"},
-			{"proxyid":"12","host":"edge-proxy-1","proxy_groupid":"7","operating_mode":"0","local_address":"edge-proxy-1.edge-proxy.pg-ns.svc","local_port":"10051"}
+			{"proxyid":"11","name":"edge-proxy-0","proxy_groupid":"7","operating_mode":"0","local_address":"edge-proxy-0.edge-proxy.pg-ns.svc","local_port":"10051"},
+			{"proxyid":"12","name":"edge-proxy-1","proxy_groupid":"7","operating_mode":"0","local_address":"edge-proxy-1.edge-proxy.pg-ns.svc","local_port":"10051"}
 		],"id":1}`,
 	}
 }
@@ -271,7 +271,7 @@ func TestReconcileConvergesWorkloadAndServerSideGroup(t *testing.T) {
 		if call.Params["operating_mode"] != 0.0 {
 			t.Errorf("create params = %+v, want operating_mode 0", call.Params)
 		}
-		host, _ := call.Params["host"].(string)
+		host, _ := call.Params["name"].(string)
 		addr, _ := call.Params["local_address"].(string)
 		wantAddr := host + ".edge-proxy." + pgTestNS + ".svc"
 		if addr != wantAddr {
@@ -370,9 +370,9 @@ func TestSyncGroupMembersCreatesUpdatesAndDeletes(t *testing.T) {
 		rpcPGGroupGet:    `{"jsonrpc":"2.0","result":[{"proxy_groupid":"7","name":"edge-group","failover_delay":"1m","min_online":"1","state":"3"}],"id":1}`,
 		rpcPGGroupUpdate: respPGGroupIDs,
 		rpcPGProxyGet: `{"jsonrpc":"2.0","result":[
-			{"proxyid":"11","host":"edge-proxy-0","proxy_groupid":"7","operating_mode":"0","local_address":"stale-address.svc","local_port":"10051"},
-			{"proxyid":"13","host":"edge-proxy-2","proxy_groupid":"7","operating_mode":"0","local_address":"edge-proxy-2.edge-proxy.pg-ns.svc","local_port":"10051"},
-			{"proxyid":"20","host":"user-own-proxy","proxy_groupid":"7","operating_mode":"0","local_address":"user.svc","local_port":"10051"}
+			{"proxyid":"11","name":"edge-proxy-0","proxy_groupid":"7","operating_mode":"0","local_address":"stale-address.svc","local_port":"10051"},
+			{"proxyid":"13","name":"edge-proxy-2","proxy_groupid":"7","operating_mode":"0","local_address":"edge-proxy-2.edge-proxy.pg-ns.svc","local_port":"10051"},
+			{"proxyid":"20","name":"user-own-proxy","proxy_groupid":"7","operating_mode":"0","local_address":"user.svc","local_port":"10051"}
 		],"id":1}`,
 		rpcPGProxyCreate: `{"jsonrpc":"2.0","result":{"proxyids":["12"]},"id":1}`,
 		"proxy.update":   `{"jsonrpc":"2.0","result":{"proxyids":["11"]},"id":1}`,
@@ -384,12 +384,12 @@ func TestSyncGroupMembersCreatesUpdatesAndDeletes(t *testing.T) {
 	h.reconcileOnce(t)
 
 	created, updated, deleted := 0, 0, false
-	var createdHosts []string
+	var createdNames []string
 	for _, call := range h.calls {
 		switch call.Method {
 		case rpcPGProxyCreate:
 			created++
-			createdHosts = append(createdHosts, call.Params["host"].(string))
+			createdNames = append(createdNames, call.Params["name"].(string))
 		case "proxy.update":
 			updated++
 			if id, _ := call.Params["proxyid"].(string); id != "11" || call.Params["local_address"] != "edge-proxy-0.edge-proxy.pg-ns.svc" {
@@ -409,8 +409,8 @@ func TestSyncGroupMembersCreatesUpdatesAndDeletes(t *testing.T) {
 	if !deleted {
 		t.Errorf("stale member edge-proxy-2 was not deleted")
 	}
-	if created != 1 || createdHosts[0] != "edge-proxy-1" {
-		t.Errorf("created = %d %v, want only edge-proxy-1", created, createdHosts)
+	if created != 1 || createdNames[0] != "edge-proxy-1" {
+		t.Errorf("created = %d %v, want only edge-proxy-1", created, createdNames)
 	}
 	if updated != 1 {
 		t.Errorf("updated = %d, want 1", updated)

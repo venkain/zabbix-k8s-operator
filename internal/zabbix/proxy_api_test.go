@@ -145,7 +145,7 @@ func TestCreateAndUpdateProxyGroupPayload(t *testing.T) {
 func TestGroupProxiesLifecycle(t *testing.T) {
 	recorded := make([]map[string]any, 0, 4)
 	server := proxyGroupStubServer(t, map[string]string{
-		"proxy.get":    `{"jsonrpc":"2.0","result":[{"proxyid":"3","host":"pg-proxy-0","proxy_groupid":"7","operating_mode":"0","local_address":"pg-proxy-0.pg-proxy.ns.svc","local_port":"10051"}],"id":1}`,
+		"proxy.get":    `{"jsonrpc":"2.0","result":[{"proxyid":"3","name":"pg-proxy-0","proxy_groupid":"7","operating_mode":"0","local_address":"pg-proxy-0.pg-proxy.ns.svc","local_port":"10051"}],"id":1}`,
 		"proxy.create": `{"jsonrpc":"2.0","result":{"proxyids":["4"]},"id":1}`,
 		"proxy.update": `{"jsonrpc":"2.0","result":{"proxyids":["3"]},"id":1}`,
 		"proxy.delete": `{"jsonrpc":"2.0","result":{"proxyids":["3","4"]},"id":1}`,
@@ -156,7 +156,7 @@ func TestGroupProxiesLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchGroupProxies: %v", err)
 	}
-	if len(members) != 1 || members[0].Host != "pg-proxy-0" || members[0].ID != 3 || members[0].OperatingMode != 0 || members[0].GroupID != 7 {
+	if len(members) != 1 || members[0].Name != "pg-proxy-0" || members[0].ID != 3 || members[0].OperatingMode != 0 || members[0].GroupID != 7 {
 		t.Fatalf("members = %+v", members)
 	}
 
