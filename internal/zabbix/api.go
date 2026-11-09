@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -76,10 +77,10 @@ func APIEndpoint(z *zabbixv1alpha1.Zabbix) string {
 // jsonrpcRequest is a Zabbix JSON-RPC 2.0 request. Since 6.4 the API
 // carries authentication in the Authorization header, not the body.
 type jsonrpcRequest struct {
-	JSONRPC string         `json:"jsonrpc"`
-	Method  string         `json:"method"`
-	Params  map[string]any `json:"params"`
-	ID      int            `json:"id"`
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params"`
+	ID      int    `json:"id"`
 }
 
 // jsonrpcError is the error member of a JSON-RPC response.
@@ -88,65 +89,90 @@ type jsonrpcError struct {
 	Data    string `json:"data"`
 }
 
-// jsonrpcResponse is a hanode.get response: either a result or an error.
-type jsonrpcResponse struct {
-	Result []struct {
-		Name       string `json:"name"`
-		Address    string `json:"address"`
-		Status     int64  `json:"status,string"`
-		LastAccess int64  `json:"lastaccess,string"`
-	} `json:"result"`
-	Error *jsonrpcError `json:"error"`
+// jsonrpcEnvelope carries the result of any JSON-RPC method. The result
+// type varies per method, so decoding is done through the generic
+// callJSONRPC helper; hanode.get stays inlined as its historical surface.
+type jsonrpcEnvelope[T any] struct {
+	JSONRPC string        `json:"jsonrpc"`
+	Result  T             `json:"result"`
+	Error   *jsonrpcError `json:"error"`
 }
 
-// FetchHANodes queries the HA node registry via hanode.get. The endpoint
-// is the frontend's api_jsonrpc.php URL; the token must be an API token
-// with permission to read HA node state.
-func FetchHANodes(ctx context.Context, httpClient *http.Client, endpoint, token string) ([]HANode, error) {
+// callJSONRPC issues one authenticated JSON-RPC request and decodes the
+// result into T. The status code is checked after decoding: the frontend
+// reports API errors inside a JSON-RPC error member with HTTP 200, while
+// proxy errors surface as non-200 with arbitrary bodies.
+func callJSONRPC[T any](ctx context.Context, httpClient *http.Client, endpoint, token, method string, params any) (T, error) {
+	var zero T
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
 
 	body, err := json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
-		Method:  "hanode.get",
-		Params:  map[string]any{"output": "extend"},
+		Method:  method,
+		Params:  params,
 		ID:      1,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("encoding hanode.get request: %w", err)
+		return zero, fmt.Errorf("encoding %s request: %w", method, err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("building hanode.get request: %w", err)
+		return zero, fmt.Errorf("building %s request: %w", method, err)
 	}
 	req.Header.Set("Content-Type", "application/json-rpc")
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("calling %s: %w", endpoint, err)
+		return zero, fmt.Errorf("calling %s: %w", endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var payload jsonrpcResponse
-	// The status code is checked after decoding: the frontend reports API
-	// errors inside a JSON-RPC error member with HTTP 200, while proxy
-	// errors surface as non-200 with arbitrary bodies.
+	var payload jsonrpcEnvelope[T]
 	decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("calling %s: unexpected HTTP status %d", endpoint, resp.StatusCode)
+		return zero, fmt.Errorf("calling %s: unexpected HTTP status %d", endpoint, resp.StatusCode)
 	}
 	if decodeErr != nil {
-		return nil, fmt.Errorf("decoding hanode.get response: %w", decodeErr)
+		return zero, fmt.Errorf("decoding %s response: %w", method, decodeErr)
 	}
 	if payload.Error != nil {
-		return nil, fmt.Errorf("hanode.get failed: %s: %s", payload.Error.Message, payload.Error.Data)
+		return zero, fmt.Errorf("%s failed: %s: %s", method, payload.Error.Message, payload.Error.Data)
+	}
+	return payload.Result, nil
+}
+
+// hanodeResult is one hanode.get registry entry as returned by the API.
+// The string tags match the API's actual output format (integers arrive
+// quoted), validated against the lab instance.
+type hanodeResult struct {
+	Name       string `json:"name"`
+	Address    string `json:"address"`
+	Status     int64  `json:"status,string"`
+	LastAccess int64  `json:"lastaccess,string"`
+}
+
+// outputExtend requests the full object output on *.get methods;
+// paramOutput is the corresponding request parameter name.
+const (
+	outputExtend = "extend"
+	paramOutput  = "output"
+)
+
+// FetchHANodes queries the HA node registry via hanode.get. The endpoint
+// is the frontend's api_jsonrpc.php URL; the token must be an API token
+// with permission to read HA node state.
+func FetchHANodes(ctx context.Context, httpClient *http.Client, endpoint, token string) ([]HANode, error) {
+	raw, err := callJSONRPC[[]hanodeResult](ctx, httpClient, endpoint, token, "hanode.get", map[string]any{paramOutput: outputExtend})
+	if err != nil {
+		return nil, err
 	}
 
-	nodes := make([]HANode, 0, len(payload.Result))
-	for _, r := range payload.Result {
+	nodes := make([]HANode, 0, len(raw))
+	for _, r := range raw {
 		state, ok := hanodeStatusCodes[r.Status]
 		if !ok {
 			state = HANodeStateUnknown
@@ -159,4 +185,200 @@ func FetchHANodes(ctx context.Context, httpClient *http.Client, endpoint, token 
 		})
 	}
 	return nodes, nil
+}
+
+// ProxyGroupState is the observed state of a Zabbix proxy group, using
+// the terms of the official proxygroup state documentation.
+type ProxyGroupState string
+
+const (
+	ProxyGroupStateUnknown    ProxyGroupState = "unknown"
+	ProxyGroupStateOffline    ProxyGroupState = "offline"
+	ProxyGroupStateRecovering ProxyGroupState = "recovering"
+	ProxyGroupStateOnline     ProxyGroupState = "online"
+	ProxyGroupStateDegrading  ProxyGroupState = "degrading"
+)
+
+// proxyGroupStateCodes are the numeric proxygroup.state values of the
+// official API (8.0 proxygroup object). No gap covers an undocumented
+// code: it maps to unknown for safety.
+var proxyGroupStateCodes = map[int64]ProxyGroupState{
+	0: ProxyGroupStateUnknown,
+	1: ProxyGroupStateOffline,
+	2: ProxyGroupStateRecovering,
+	3: ProxyGroupStateOnline,
+	4: ProxyGroupStateDegrading,
+}
+
+// ProxyGroup is one proxy group as returned by proxygroup.get.
+type ProxyGroup struct {
+	ID            int64
+	Name          string
+	FailoverDelay string
+	MinOnline     string
+	State         ProxyGroupState
+}
+
+// proxyGroupResult is one proxygroup.get entry in API wire format
+// (integers arrive quoted, same as hanode.get).
+type proxyGroupResult struct {
+	ID            int64  `json:"proxy_groupid,string"`
+	Name          string `json:"name"`
+	FailoverDelay string `json:"failover_delay"`
+	MinOnline     string `json:"min_online"`
+	State         int64  `json:"state,string"`
+}
+
+// FetchProxyGroup looks up the group by name via proxygroup.get. It
+// returns (nil, nil) when the group does not exist.
+func FetchProxyGroup(ctx context.Context, httpClient *http.Client, endpoint, token, name string) (*ProxyGroup, error) {
+	raw, err := callJSONRPC[[]proxyGroupResult](ctx, httpClient, endpoint, token, "proxygroup.get", map[string]any{
+		paramOutput: outputExtend,
+		"filter":    map[string]any{"name": []string{name}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	r := raw[0]
+	state, ok := proxyGroupStateCodes[r.State]
+	if !ok {
+		state = ProxyGroupStateUnknown
+	}
+	return &ProxyGroup{
+		ID:            r.ID,
+		Name:          r.Name,
+		FailoverDelay: r.FailoverDelay,
+		MinOnline:     r.MinOnline,
+		State:         state,
+	}, nil
+}
+
+// CreateProxyGroup creates the operator-managed group via proxygroup.create.
+func CreateProxyGroup(ctx context.Context, httpClient *http.Client, endpoint, token, name, failoverDelay, minOnline string) (int64, error) {
+	created, err := callJSONRPC[idResult](ctx, httpClient, endpoint, token, "proxygroup.create", map[string]any{
+		"name":           name,
+		"failover_delay": failoverDelay,
+		"min_online":     minOnline,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return parseID(created.ProxyGroupIDs, "proxy_groupids")
+}
+
+// UpdateProxyGroup aligns the group settings via proxygroup.update.
+func UpdateProxyGroup(ctx context.Context, httpClient *http.Client, endpoint, token string, groupID int64, failoverDelay, minOnline string) error {
+	_, err := callJSONRPC[idResult](ctx, httpClient, endpoint, token, "proxygroup.update", map[string]any{
+		"proxy_groupid":  intToStringID(groupID),
+		"failover_delay": failoverDelay,
+		"min_online":     minOnline,
+	})
+	return err
+}
+
+// idResult is the common shape of proxy/proxygroup create, update and
+// delete responses: the mutated ids.
+type idResult struct {
+	ProxyGroupIDs []string `json:"proxy_groupids"`
+	ProxyIDs      []string `json:"proxyids"`
+}
+
+// parseID decodes the single id of a mutation response.
+func parseID(ids []string, field string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, fmt.Errorf("%s response has no ids", field)
+	}
+	id, err := strconv.ParseInt(ids[0], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing %s: %w", field, err)
+	}
+	return id, nil
+}
+
+// ProxyMember is one proxy record as returned by proxy.get, restricted
+// to the fields the group membership maintenance reads and writes.
+type ProxyMember struct {
+	ID            int64
+	Host          string
+	GroupID       int64
+	OperatingMode int64
+	LocalAddress  string
+	LocalPort     string
+}
+
+// proxyMemberResult is one proxy.get entry in API wire format.
+type proxyMemberResult struct {
+	ID            int64  `json:"proxyid,string"`
+	Host          string `json:"host"`
+	GroupID       int64  `json:"proxy_groupid,string"`
+	OperatingMode int64  `json:"operating_mode,string"`
+	LocalAddress  string `json:"local_address"`
+	LocalPort     string `json:"local_port"`
+}
+
+// FetchGroupProxies lists the proxies that belong to the group, via
+// proxy.get with the official proxy_groupids filter.
+func FetchGroupProxies(ctx context.Context, httpClient *http.Client, endpoint, token string, groupID int64) ([]ProxyMember, error) {
+	raw, err := callJSONRPC[[]proxyMemberResult](ctx, httpClient, endpoint, token, "proxy.get", map[string]any{
+		paramOutput:      outputExtend,
+		"proxy_groupids": []string{intToStringID(groupID)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	members := make([]ProxyMember, 0, len(raw))
+	for _, r := range raw {
+		members = append(members, ProxyMember(r))
+	}
+	return members, nil
+}
+
+// CreateProxyMember registers the server-side proxy record that makes a
+// daemon join the group: operating_mode=0 (active), the group assignment,
+// and the local_address active agents connect to (official proxy object
+// requirements for group members).
+func CreateProxyMember(ctx context.Context, httpClient *http.Client, endpoint, token string, groupID int64, host, localAddress, localPort string) (int64, error) {
+	created, err := callJSONRPC[idResult](ctx, httpClient, endpoint, token, "proxy.create", map[string]any{
+		"host":           host,
+		"operating_mode": 0,
+		"proxy_groupid":  intToStringID(groupID),
+		"local_address":  localAddress,
+		"local_port":     localPort,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return parseID(created.ProxyIDs, "proxyids")
+}
+
+// UpdateProxyMember aligns a member's routing address via proxy.update.
+func UpdateProxyMember(ctx context.Context, httpClient *http.Client, endpoint, token string, memberID int64, localAddress, localPort string) error {
+	_, err := callJSONRPC[idResult](ctx, httpClient, endpoint, token, "proxy.update", map[string]any{
+		"proxyid":       intToStringID(memberID),
+		"local_address": localAddress,
+		"local_port":    localPort,
+	})
+	return err
+}
+
+// DeleteProxyMembers removes operator-created group members via proxy.delete.
+func DeleteProxyMembers(ctx context.Context, httpClient *http.Client, endpoint, token string, memberIDs []string) error {
+	_, err := callJSONRPC[idResult](ctx, httpClient, endpoint, token, "proxy.delete", memberIDs)
+	return err
+}
+
+// DeleteProxyGroup removes the operator-managed group via proxygroup.delete.
+// Members receive proxy_groupid=0 server-side (they are not deleted).
+func DeleteProxyGroup(ctx context.Context, httpClient *http.Client, endpoint, token string, groupID int64) error {
+	_, err := callJSONRPC[idResult](ctx, httpClient, endpoint, token, "proxygroup.delete", []string{intToStringID(groupID)})
+	return err
+}
+
+// intToStringID renders an ID for the request payload; the API accepts
+// both numbers and strings, strings match the server's own output style.
+func intToStringID(id int64) string {
+	return strconv.FormatInt(id, 10)
 }

@@ -172,23 +172,23 @@ func TestServerReplicasDefault(t *testing.T) {
 }
 
 func TestSetCondition(t *testing.T) {
-	var status zabbixv1alpha1.ZabbixStatus
-	SetCondition(&status, "ServerReady", metav1.ConditionTrue, "R", "m", 7)
+	var conditions []metav1.Condition
+	SetCondition(&conditions, "ServerReady", metav1.ConditionTrue, "R", "m", 7)
 
-	if len(status.Conditions) != 1 {
-		t.Fatalf("conditions = %+v", status.Conditions)
+	if len(conditions) != 1 {
+		t.Fatalf("conditions = %+v", conditions)
 	}
-	cond := status.Conditions[0]
+	cond := conditions[0]
 	if cond.Type != "ServerReady" || cond.Status != metav1.ConditionTrue || cond.ObservedGeneration != 7 {
 		t.Errorf("condition = %+v", cond)
 	}
 
 	// Idempotent reapplication must not duplicate.
-	SetCondition(&status, "ServerReady", metav1.ConditionFalse, "R2", "m2", 8)
-	if len(status.Conditions) != 1 {
-		t.Fatalf("conditions after update = %+v", status.Conditions)
+	SetCondition(&conditions, "ServerReady", metav1.ConditionFalse, "R2", "m2", 8)
+	if len(conditions) != 1 {
+		t.Fatalf("conditions after update = %+v", conditions)
 	}
-	if status.Conditions[0].Status != metav1.ConditionFalse || status.Conditions[0].ObservedGeneration != 8 {
-		t.Errorf("condition not updated: %+v", status.Conditions[0])
+	if conditions[0].Status != metav1.ConditionFalse || conditions[0].ObservedGeneration != 8 {
+		t.Errorf("condition not updated: %+v", conditions[0])
 	}
 }

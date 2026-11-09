@@ -400,7 +400,7 @@ func statefulSetMessage(component string, ready bool) string {
 }
 
 func setCond(status *zabbixv1alpha1.ZabbixStatus, t zabbixv1alpha1.ComponentConditionType, s metav1.ConditionStatus, reason, message string, generation int64) {
-	zabbix.SetCondition(status, string(t), s, reason, message, generation)
+	zabbix.SetCondition(&status.Conditions, string(t), s, reason, message, generation)
 }
 
 func readyCondition(ready bool) metav1.ConditionStatus {

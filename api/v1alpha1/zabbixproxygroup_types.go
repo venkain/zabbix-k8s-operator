@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -57,18 +58,23 @@ type ZabbixProxyGroupSpec struct {
 
 	// resources for each proxy container.
 	// +optional
-	Resources ResourceRequirementsSpec `json:"resources,omitempty"`
-}
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
-// ResourceRequirementsSpec mirrors corev1.ResourceRequirements to avoid
-// leaking the full core type into the spec surface.
-// +kubebuilder:object:generate=true
-type ResourceRequirementsSpec struct {
+	// failoverDelay is the period during which a group member must
+	// communicate with the Zabbix server to be considered online (see the
+	// official proxy_group failover_delay documentation). Time suffixes
+	// (s, m, h) are supported; empty uses the server default (1m).
+	// +kubebuilder:validation:Pattern=`^[0-9]+[smh]$`
 	// +optional
-	Requests map[string]string `json:"requests,omitempty"`
+	FailoverDelay string `json:"failoverDelay,omitempty"`
 
+	// minOnline is the minimum number of online proxies required to keep
+	// the proxy group online (see the official proxy_group min_online
+	// documentation). Zero uses the server default (1).
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000
 	// +optional
-	Limits map[string]string `json:"limits,omitempty"`
+	MinOnline int32 `json:"minOnline,omitempty"`
 }
 
 // ZabbixProxyGroupStatus defines the observed state of ZabbixProxyGroup.
@@ -88,6 +94,13 @@ type ZabbixProxyGroupStatus struct {
 	// readyReplicas is the number of proxies currently ready.
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// groupState is the observed state of the Zabbix proxy group as
+	// reported by the server (unknown/offline/recovering/online/degrading,
+	// per the official proxygroup state documentation). Empty while the
+	// group has not been resolved through the API yet.
+	// +optional
+	GroupState string `json:"groupState,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -124,6 +137,25 @@ type ZabbixProxyGroupList struct {
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []ZabbixProxyGroup `json:"items"`
 }
+
+// ProxyGroupConditionType is a custom condition type on the
+// ZabbixProxyGroup resource.
+type ProxyGroupConditionType string
+
+const (
+	// ConditionProxyGroupReady indicates the member proxies are deployed
+	// and the group is registered server-side through the API.
+	ConditionProxyGroupReady ProxyGroupConditionType = "Ready"
+
+	// ConditionProxyGroupServerResolved indicates the referenced Zabbix
+	// resource exists and provides the server wiring.
+	ConditionProxyGroupServerResolved ProxyGroupConditionType = "ServerResolved"
+
+	// ConditionProxyGroupAPIReady indicates the API-maintained server
+	// side of the group (group object and member proxy records) is in
+	// sync.
+	ConditionProxyGroupAPIReady ProxyGroupConditionType = "APIReady"
+)
 
 func init() {
 	SchemeBuilder.Register(func(s *runtime.Scheme) error {

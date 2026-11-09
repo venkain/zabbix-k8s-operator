@@ -32,12 +32,20 @@ import (
 // per-pod HA identity from the pod hostname; ZBX_NODEADDRESSPORT sets the
 // port registered alongside the node address.
 const (
-	envAutoHANodeName   = "ZBX_AUTOHANODENAME"
-	envAutoNodeAddress  = "ZBX_AUTONODEADDRESS"
-	envNodeAddressPort  = "ZBX_NODEADDRESSPORT"
+	envAutoHANodeName  = "ZBX_AUTOHANODENAME"
+	envAutoNodeAddress = "ZBX_AUTONODEADDRESS"
+	envNodeAddressPort = "ZBX_NODEADDRESSPORT"
+	// Server wiring of the trapper address; the proxy group members set
+	// the same pair (see proxy.go).
+	envServerHost       = "ZBX_SERVER_HOST"
+	envServerPort       = "ZBX_SERVER_PORT"
 	portNameTrapper     = "zabbix-trapper"
 	serverContainerName = "zabbix-server"
 	agentContainerName  = "agent2"
+	// probePgrep is the process-liveness command of the server and proxy
+	// daemons (exec pgrep <daemon>): TCP probes would kill standby pods,
+	// which accept no connections (see the HA probe lesson).
+	probePgrep = "pgrep"
 )
 
 // ServerStatefulSet builds the server StatefulSet for the configured
@@ -180,8 +188,8 @@ func ActiveServerService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 // frontend always talks to whichever node is active.
 func ServerEnvVarsForFrontend(z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
 	return []corev1.EnvVar{
-		{Name: "ZBX_SERVER_HOST", Value: ActiveServerService(z).Name},
-		{Name: "ZBX_SERVER_PORT", Value: fmt.Sprintf("%d", ServerPort)},
+		{Name: envServerHost, Value: ActiveServerService(z).Name},
+		{Name: envServerPort, Value: fmt.Sprintf("%d", ServerPort)},
 		{Name: "ZBX_SERVER_NAME", Value: z.Name},
 	}
 }
@@ -237,8 +245,8 @@ func agentSidecar(z *zabbixv1alpha1.Zabbix, spec *zabbixv1alpha1.AgentSidecarSpe
 			// injects ZBX_SERVER_PORT=<tcp://ip:port> namespace-wide, which
 			// corrupts the agent's ServerActive composition. Defining the
 			// variables here makes the container values authoritative.
-			{Name: "ZBX_SERVER_HOST", Value: "127.0.0.1"},
-			{Name: "ZBX_SERVER_PORT", Value: fmt.Sprintf("%d", ServerPort)},
+			{Name: envServerHost, Value: "127.0.0.1"},
+			{Name: envServerPort, Value: fmt.Sprintf("%d", ServerPort)},
 			{Name: "ZBX_SERVER_NAME", Value: z.Name},
 		},
 	}
@@ -282,7 +290,7 @@ func serverReadyProbe() *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			Exec: &corev1.ExecAction{
-				Command: []string{"pgrep", "zabbix_server"},
+				Command: []string{probePgrep, "zabbix_server"},
 			},
 		},
 		// The entrypoint prepares the database schema before it starts
@@ -301,7 +309,7 @@ func serverLivenessProbe() *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			Exec: &corev1.ExecAction{
-				Command: []string{"pgrep", "zabbix_server"},
+				Command: []string{probePgrep, "zabbix_server"},
 			},
 		},
 		InitialDelaySeconds: 120,

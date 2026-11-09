@@ -57,6 +57,7 @@ const (
 	ComponentServer     = "server"
 	ComponentFrontend   = "frontend"
 	ComponentWebService = "web-service"
+	ComponentProxy      = "proxy"
 
 	// Container ports (official images).
 	ServerPort   = int32(10051)
@@ -65,6 +66,10 @@ const (
 	// (targets FrontendPort); the API client routes through it.
 	frontendServicePort = int32(80)
 	WebServicePort      = int32(10053)
+	// ProxyPort is the proxy daemon's ListenPort (trapper/passive agent
+	// traffic); the same port is registered as each group member's
+	// local_port.
+	ProxyPort = int32(10051)
 )
 
 // Names of the derived objects for a Zabbix resource named <name>.
@@ -72,6 +77,7 @@ const (
 	resourceSuffixServer     = "-server"
 	resourceSuffixFrontend   = "-frontend"
 	resourceSuffixWebService = "-web-service"
+	resourceSuffixProxy      = "-proxy"
 )
 
 // ServerName returns the name for the server's derived objects.
@@ -82,6 +88,12 @@ func FrontendName(instance string) string { return instance + resourceSuffixFron
 
 // WebServiceName returns the name for the web service's derived objects.
 func WebServiceName(instance string) string { return instance + resourceSuffixWebService }
+
+// ProxyName returns the name for a proxy group's derived objects (the
+// headless Service fronting the member pods and the StatefulSet
+// serviceName). The pod names double as the Zabbix proxy identities: each
+// group member registers with the server under <instance>-proxy-<ordinal>.
+func ProxyName(instance string) string { return instance + resourceSuffixProxy }
 
 // ImageFor returns the official container image for a component,
 // honoring user overrides. Tag derivation from spec.version:

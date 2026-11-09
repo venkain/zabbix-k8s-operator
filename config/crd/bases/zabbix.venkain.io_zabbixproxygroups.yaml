@@ -57,6 +57,14 @@ spec:
           spec:
             description: spec defines the desired state of ZabbixProxyGroup
             properties:
+              failoverDelay:
+                description: |-
+                  failoverDelay is the period during which a group member must
+                  communicate with the Zabbix server to be considered online (see the
+                  official proxy_group failover_delay documentation). Time suffixes
+                  (s, m, h) are supported; empty uses the server default (1m).
+                pattern: ^[0-9]+[smh]$
+                type: string
               groupName:
                 description: |-
                   groupName is the Zabbix proxy group these proxies join. The group
@@ -81,6 +89,15 @@ spec:
                     description: tag replaces the tag derived from spec.version.
                     type: string
                 type: object
+              minOnline:
+                description: |-
+                  minOnline is the minimum number of online proxies required to keep
+                  the proxy group online (see the official proxy_group min_online
+                  documentation). Zero uses the server default (1).
+                format: int32
+                maximum: 1000
+                minimum: 0
+                type: integer
               replicas:
                 description: replicas is the number of proxies in the group.
                 format: int32
@@ -89,13 +106,60 @@ spec:
               resources:
                 description: resources for each proxy container.
                 properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   limits:
                     additionalProperties:
-                      type: string
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                   requests:
                     additionalProperties:
-                      type: string
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
               serverRef:
@@ -179,6 +243,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              groupState:
+                description: |-
+                  groupState is the observed state of the Zabbix proxy group as
+                  reported by the server (unknown/offline/recovering/online/degrading,
+                  per the official proxygroup state documentation). Empty while the
+                  group has not been resolved through the API yet.
+                type: string
               observedGeneration:
                 description: |-
                   observedGeneration is the generation most recently observed by the

@@ -45,7 +45,8 @@ import (
 const fieldManager = "zabbix-k8s-operator"
 
 // Converge creates or updates obj so it matches the built (desired) state,
-// with the Zabbix resource as owner. Every owned object flows through here.
+// with the owning resource (a Zabbix or a ZabbixProxyGroup instance) as
+// controller. Every owned object flows through here.
 //
 // Convergence uses server-side apply: the API server merges and compares
 // only the fields present in the built object, so API defaulting (e.g.
@@ -55,7 +56,7 @@ const fieldManager = "zabbix-k8s-operator"
 // Converge does not use controllerutil.CreateOrUpdate with wholesale spec
 // reapplication: the client-side deep-equal there sees defaulted live
 // fields as drift and updates every object on every reconcile (a storm).
-func Converge(ctx context.Context, c client.Client, owner *zabbixv1alpha1.Zabbix, desired client.Object) error {
+func Converge(ctx context.Context, c client.Client, owner client.Object, desired client.Object) error {
 	logger := log.FromContext(ctx).WithValues("object", fmt.Sprintf("%T", desired), "name", desired.GetName())
 
 	// Ownership must be part of the applied configuration so the created
@@ -161,9 +162,11 @@ func StatefulSetIsReady(ctx context.Context, c client.Client, namespace, name st
 	return sts.Status.ReadyReplicas >= desired, nil
 }
 
-// SetCondition applies a condition on the Zabbix status.
-func SetCondition(status *zabbixv1alpha1.ZabbixStatus, condType string, condStatus metav1.ConditionStatus, reason, message string, generation int64) {
-	meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+// SetCondition applies a condition onto any conditions slice (the Zabbix
+// status and the ZabbixProxyGroup status use the same metav1.Condition
+// listType=map structure).
+func SetCondition(conditions *[]metav1.Condition, condType string, condStatus metav1.ConditionStatus, reason, message string, generation int64) {
+	meta.SetStatusCondition(conditions, metav1.Condition{
 		Type:               condType,
 		Status:             condStatus,
 		ObservedGeneration: generation,

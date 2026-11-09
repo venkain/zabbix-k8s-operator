@@ -26,6 +26,7 @@ import (
 // and intent stays explicit.
 const (
 	testVersion80   = "8.0"
+	testVersion70   = "7.0"
 	testImageServer = "server-pgsql"
 	testClusterName = "zabbix-db"
 	testAppSecret   = "zabbix-db-app"
@@ -77,7 +78,7 @@ func TestImageFor(t *testing.T) {
 		{
 			name:      "7.0 LTS release line",
 			component: "web-nginx-pgsql",
-			version:   "7.0",
+			version:   testVersion70,
 			want:      "zabbix/zabbix-web-nginx-pgsql:ubuntu-7.0-latest",
 		},
 		{
