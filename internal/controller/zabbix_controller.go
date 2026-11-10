@@ -378,8 +378,13 @@ func (r *ZabbixReconciler) maintainHARoles(ctx context.Context, z *zabbixv1alpha
 }
 
 // apiToken reads the Zabbix API token from the Secret referenced in
-// spec.api.tokenSecretRef.
+// spec.api.tokenSecretRef. A referenced Zabbix resource without an api
+// block (standalone server, no HA maintenance) has no token to read: the
+// error surfaces through the caller's condition instead of a panic.
 func apiToken(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix) (string, error) {
+	if z.Spec.API == nil {
+		return "", fmt.Errorf("referenced Zabbix resource %q has no api token configured", z.Name)
+	}
 	ref := z.Spec.API.TokenSecretRef
 	var secret corev1.Secret
 	if err := c.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: ref.Name}, &secret); err != nil {

@@ -77,15 +77,28 @@ func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deplo
 }
 
 // FrontendService builds the frontend Service (the user-facing entry).
+// ClusterIP by default; the spec may opt into NodePort/LoadBalancer
+// exposure and add Service annotations (e.g. cloud LB settings). Ingress
+// routing on top stays user-managed.
 func FrontendService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
+	svcType := corev1.ServiceTypeClusterIP
+	var annotations map[string]string
+	if spec := z.Spec.Frontend; spec != nil && spec.Service != nil {
+		if spec.Service.Type != nil {
+			svcType = *spec.Service.Type
+		}
+		annotations = spec.Service.Annotations
+	}
+
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      FrontendName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    commonLabels(z.Name, ComponentFrontend),
+			Name:        FrontendName(z.Name),
+			Namespace:   z.Namespace,
+			Labels:      commonLabels(z.Name, ComponentFrontend),
+			Annotations: annotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeClusterIP,
+			Type:     svcType,
 			Selector: selectorLabels(z.Name, ComponentFrontend),
 			Ports: []corev1.ServicePort{{
 				Name:       portNameHTTP,

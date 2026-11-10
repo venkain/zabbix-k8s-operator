@@ -62,6 +62,11 @@ const (
 
 	// respPGGroupIDs is the canned mutation response naming group 7.
 	respPGGroupIDs = `{"jsonrpc":"2.0","result":{"proxy_groupids":["7"]},"id":1}`
+
+	// respPGEmpty / respPGMemberMake are the shared empty-list and
+	// member-creation canned responses.
+	respPGEmpty      = `{"jsonrpc":"2.0","result":[],"id":1}`
+	respPGMemberMake = `{"jsonrpc":"2.0","result":{"proxyids":["11"]},"id":1}`
 )
 
 // rpcCall is one recorded JSON-RPC request.
@@ -200,10 +205,10 @@ func countCalls(methods []string, want string) int {
 
 // Edge-group API wire responses used by the "fresh pass" tests.
 var pgCreateResponses = map[string]string{
-	rpcPGGroupGet:       `{"jsonrpc":"2.0","result":[],"id":1}`,
+	rpcPGGroupGet:       respPGEmpty,
 	"proxygroup.create": respPGGroupIDs,
-	rpcPGProxyGet:       `{"jsonrpc":"2.0","result":[],"id":1}`,
-	rpcPGProxyCreate:    `{"jsonrpc":"2.0","result":{"proxyids":["11"]},"id":1}`,
+	rpcPGProxyGet:       respPGEmpty,
+	rpcPGProxyCreate:    respPGMemberMake,
 }
 
 // pgLiveResponses describes an in-sync state: group exists with the
@@ -375,7 +380,7 @@ func TestSyncGroupMembersCreatesUpdatesAndDeletes(t *testing.T) {
 			{"proxyid":"20","name":"user-own-proxy","proxy_groupid":"7","operating_mode":"0","local_address":"user.svc","local_port":"10051"}
 		],"id":1}`,
 		rpcPGProxyCreate: `{"jsonrpc":"2.0","result":{"proxyids":["12"]},"id":1}`,
-		"proxy.update":   `{"jsonrpc":"2.0","result":{"proxyids":["11"]},"id":1}`,
+		"proxy.update":   respPGMemberMake,
 		rpcPGProxyDelete: `{"jsonrpc":"2.0","result":{"proxyids":["13"]},"id":1}`,
 	}
 	h := newPGHarness(t, responses,

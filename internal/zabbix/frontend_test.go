@@ -62,6 +62,33 @@ func TestFrontendService(t *testing.T) {
 	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != int(FrontendPort) {
 		t.Errorf("frontend service ports = %+v, want port 80 -> 8080", svc.Spec.Ports)
 	}
+	if len(svc.Annotations) != 0 {
+		t.Errorf("annotations = %v, want none by default", svc.Annotations)
+	}
+}
+
+func TestFrontendServiceExposure(t *testing.T) {
+	z := testZabbix()
+	z.Spec.Frontend = &zabbixv1alpha1.FrontendSpec{
+		Service: &zabbixv1alpha1.FrontendServiceSpec{
+			Type: ptr.To[corev1.ServiceType](corev1.ServiceTypeNodePort),
+			Annotations: map[string]string{
+				"example.com/lb-config": "value",
+			},
+		},
+	}
+	svc := FrontendService(z)
+
+	if svc.Spec.Type != corev1.ServiceTypeNodePort {
+		t.Errorf("service type = %q, want NodePort", svc.Spec.Type)
+	}
+	if svc.Annotations["example.com/lb-config"] != "value" {
+		t.Errorf("annotations = %v, want the spec annotations", svc.Annotations)
+	}
+	// The NodePort is cluster-allocated: the builder must not pin it.
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].NodePort != 0 {
+		t.Errorf("nodePort must not be pinned, got %+v", svc.Spec.Ports[0])
+	}
 }
 
 func TestWebServiceDeploymentAndService(t *testing.T) {

@@ -81,18 +81,27 @@ and third-party tutorials are never normative and are not cited here.
 
 ## Open questions
 
-- OQ1: CRD shape — one `Zabbix` CR owning the whole stack, plus how proxy
-  groups are expressed (sub-spec vs separate CR). Decide during Phase 1.
-- OQ2: Frontend exposure — Ingress/LoadBalancer/NodePort handled by the
-  operator, or left to users?
-- OQ3: How much of the `ZBX_*` configuration surface to expose in the CR
-  spec vs hidden behind sane production defaults.
-- OQ4: Active-server routing — how the frontend (and proxies/agents)
-  reach the *active* HA server node: a controller-managed Service whose
-  selector tracks the active node (driven by HA node state via the Zabbix
-  API), versus a headless Service with readiness that reflects the active
-  role. Decide during Phase 1; affects Service topology and reconcile
-  scope.
+- ~~OQ1: CRD shape~~ — **resolved 2026-11-09**: one `Zabbix` CR owns the
+  whole stack; proxy groups are a separate `ZabbixProxyGroup` CR that
+  references the server resource (`spec.serverRef`) — the group has its
+  own lifecycle (member scaling, server-side group maintenance,
+  deletion finalizer) and need not require a `Zabbix` instance to exist.
+- ~~OQ2: Frontend exposure~~ — **resolved 2026-11-10**: the operator
+  exposes a Service-type knob (`frontend.service.type`, ClusterIP
+  default; NodePort/LoadBalancer opt-in, plus Service annotations).
+  Ingress routing on top stays user-managed — the operator owns the
+  Service, not the traffic stack above it.
+- ~~OQ3: `ZBX_*` surface~~ — **resolved 2026-11-10**: the CR exposes a
+  curated production surface (replicas, images, resources, HA wiring,
+  proxy-group settings) behind sane defaults derived from the official
+  component documentation; `frontend.env` is the escape hatch for
+  frontend-only PHP settings. Deeper config passthrough is added only
+  when a real need is demonstrated, never speculatively.
+- ~~OQ4: Active-server routing~~ — **resolved 2026-11-08**: a
+  controller-managed `<instance>-server-active` Service whose selector
+  tracks the HA role label, maintained per pod from the official
+  `hanode.get` registry through the API. The frontend and proxy group
+  members are wired to it.
 
 ## Decision log
 
@@ -101,3 +110,6 @@ and third-party tutorials are never normative and are not cited here.
   in a separate research repository.
 - 2026-11-07: Reference policy recorded (official versioned Zabbix docs
   are the sole normative reference). OQ4 added (active-server routing).
+- 2026-11-10: OQ1–OQ4 closed (see entries above). OQ1/OQ4 were decided
+  by the shipped slice 2/3 implementations; OQ2/OQ3 decided explicitly
+  (Service-type knob; curated surface + env escape hatch).

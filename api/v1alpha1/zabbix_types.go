@@ -143,6 +143,30 @@ type FrontendSpec struct {
 	// container (e.g. PHP settings).
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// service configures the Service fronting the frontend (the
+	// user-facing entry). In-cluster access is a ClusterIP Service by
+	// default; external exposure (NodePort/LoadBalancer) is opt-in. Any
+	// ingress routing on top stays user-managed: the operator owns the
+	// Service, not the traffic stack above it.
+	// +optional
+	Service *FrontendServiceSpec `json:"service,omitempty"`
+}
+
+// FrontendServiceSpec configures the frontend Service.
+type FrontendServiceSpec struct {
+	// type is the exposure of the frontend Service. ClusterIP (the
+	// default) serves in-cluster traffic only; NodePort and LoadBalancer
+	// expose the frontend outside the cluster (the assigned NodePort is
+	// allocation-controlled by the cluster, not pinned here).
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	// +optional
+	Type *corev1.ServiceType `json:"type,omitempty"`
+
+	// annotations are added to the frontend Service (e.g. cloud
+	// load-balancer settings).
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // WebServiceSpec configures the Zabbix web service, which the server uses
