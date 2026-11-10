@@ -77,6 +77,7 @@ type ZabbixProxyGroupReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch
 
 // Reconcile moves the cluster and the referenced Zabbix server toward
 // the state described by the ZabbixProxyGroup resource.
@@ -131,6 +132,11 @@ func (r *ZabbixProxyGroupReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	if err := zabbix.Converge(ctx, r.Client, &pg, zabbix.ProxyHeadlessService(&pg)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("converging proxy headless service: %w", err)
+	}
+	// Voluntary-disruption guard: draining a node takes down at most one
+	// member proxy at a time (etched by DisruptionBudget).
+	if err := zabbix.Converge(ctx, r.Client, &pg, zabbix.ProxyDisruptionBudget(&pg)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("converging proxy disruption budget: %w", err)
 	}
 
 	// 3.5. Un-wedge the rollout: a member pod that crash-loops on an

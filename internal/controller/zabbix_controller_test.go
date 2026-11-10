@@ -22,6 +22,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -94,6 +95,12 @@ var _ = Describe("Zabbix Controller", func() {
 			for _, name := range []string{resourceName + "-server", resourceName + "-server-active", resourceName + "-frontend"} {
 				svc := &corev1.Service{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: resourceNamespace}, svc)).Should(Succeed())
+			}
+
+			for _, name := range []string{resourceName + "-server", resourceName + "-frontend"} {
+				pdb := &policyv1.PodDisruptionBudget{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: resourceNamespace}, pdb)).Should(Succeed())
+				Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
 			}
 
 			By("expecting the status to report the database resolved but components not ready (envtest runs no pods)")

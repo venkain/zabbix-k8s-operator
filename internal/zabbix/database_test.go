@@ -85,7 +85,7 @@ func TestResolveDatabase(t *testing.T) {
 	}
 
 	validSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: testAppSecret, Namespace: "test-ns"},
+		ObjectMeta: metav1.ObjectMeta{Name: testAppSecret, Namespace: testNamespace},
 		Data: map[string][]byte{
 			SecretKeyHost:     []byte(testHostRW),
 			SecretKeyPort:     []byte("5432"),
@@ -98,7 +98,7 @@ func TestResolveDatabase(t *testing.T) {
 	t.Run("cnpg reads the cluster app secret", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(validSecret).Build()
 		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: testClusterName}}
-		db, err := ResolveDatabase(context.Background(), c, "test-ns", spec)
+		db, err := ResolveDatabase(context.Background(), c, testNamespace, spec)
 		if err != nil {
 			t.Fatalf("ResolveDatabase: %v", err)
 		}
@@ -113,7 +113,7 @@ func TestResolveDatabase(t *testing.T) {
 	t.Run("external reads a user-provided secret", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(validSecret).Build()
 		spec := zabbixv1alpha1.DatabaseSpec{External: &zabbixv1alpha1.ExternalDatabaseSpec{SecretName: testAppSecret}}
-		if _, err := ResolveDatabase(context.Background(), c, "test-ns", spec); err != nil {
+		if _, err := ResolveDatabase(context.Background(), c, testNamespace, spec); err != nil {
 			t.Fatalf("ResolveDatabase: %v", err)
 		}
 	})
@@ -121,7 +121,7 @@ func TestResolveDatabase(t *testing.T) {
 	t.Run("missing secret is reported", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).Build()
 		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: testClusterName}}
-		_, err := ResolveDatabase(context.Background(), c, "test-ns", spec)
+		_, err := ResolveDatabase(context.Background(), c, testNamespace, spec)
 		if err == nil || !strings.Contains(err.Error(), "not found") {
 			t.Errorf("want not-found error, got %v", err)
 		}
@@ -132,7 +132,7 @@ func TestResolveDatabase(t *testing.T) {
 		partial.Data = map[string][]byte{SecretKeyHost: []byte(testHostRW)}
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(partial).Build()
 		spec := zabbixv1alpha1.DatabaseSpec{CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: testClusterName}}
-		_, err := ResolveDatabase(context.Background(), c, "test-ns", spec)
+		_, err := ResolveDatabase(context.Background(), c, testNamespace, spec)
 		if err == nil || !strings.Contains(err.Error(), "missing keys") {
 			t.Errorf("want missing-keys error, got %v", err)
 		}
@@ -140,7 +140,7 @@ func TestResolveDatabase(t *testing.T) {
 
 	t.Run("no provider configured is rejected", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).Build()
-		_, err := ResolveDatabase(context.Background(), c, "test-ns", zabbixv1alpha1.DatabaseSpec{})
+		_, err := ResolveDatabase(context.Background(), c, testNamespace, zabbixv1alpha1.DatabaseSpec{})
 		if err == nil || !strings.Contains(err.Error(), "exactly one") {
 			t.Errorf("want exactly-one error, got %v", err)
 		}

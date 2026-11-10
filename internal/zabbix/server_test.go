@@ -47,7 +47,7 @@ func envIndex(envs []corev1.EnvVar, name string) int {
 
 func testZabbix() *zabbixv1alpha1.Zabbix {
 	return &zabbixv1alpha1.Zabbix{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-zabbix", Namespace: "test-ns", UID: "uid-1"},
+		ObjectMeta: metav1.ObjectMeta{Name: testInstance, Namespace: testNamespace, UID: "uid-1"},
 		Spec: zabbixv1alpha1.ZabbixSpec{
 			Version: testVersion80,
 			Database: zabbixv1alpha1.DatabaseSpec{
@@ -188,7 +188,7 @@ func TestServerServices(t *testing.T) {
 	z := testZabbix()
 
 	svc := ServerService(z)
-	if svc.Name != "test-zabbix-server" {
+	if svc.Name != testInstance+"-server" {
 		t.Errorf("server service name = %q", svc.Name)
 	}
 	if svc.Spec.Selector[ComponentLabel] != ComponentServer || svc.Spec.Selector[InstanceLabel] != z.Name {

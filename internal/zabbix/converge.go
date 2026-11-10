@@ -26,6 +26,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,6 +75,8 @@ func Converge(ctx context.Context, c client.Client, owner client.Object, desired
 		gvk = appsv1.SchemeGroupVersion.WithKind("StatefulSet")
 	case *corev1.Service:
 		gvk = corev1.SchemeGroupVersion.WithKind("Service")
+	case *policyv1.PodDisruptionBudget:
+		gvk = policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget")
 	default:
 		return fmt.Errorf("unsupported owned object type %T", desired)
 	}
@@ -111,12 +114,15 @@ func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix,
 		ActiveServerService(z),
 		FrontendDeployment(z, db),
 		FrontendService(z),
+		ServerDisruptionBudget(z),
+		FrontendDisruptionBudget(z),
 	}
 
 	if z.Spec.WebService != nil {
 		objects = append(objects,
 			WebServiceDeployment(z),
 			WebServiceService(z),
+			WebServiceDisruptionBudget(z),
 		)
 	}
 

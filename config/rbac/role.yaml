@@ -48,6 +48,17 @@ rules:
   - update
   - watch
 - apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - zabbix.venkain.io
   resources:
   - zabbixes

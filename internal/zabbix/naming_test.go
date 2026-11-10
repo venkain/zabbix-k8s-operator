@@ -26,6 +26,8 @@ import (
 // and intent stays explicit.
 const (
 	testVersion80   = "8.0"
+	testInstance    = "test-zabbix"
+	testNamespace   = "test-ns"
 	testVersion70   = "7.0"
 	testImageServer = "server-pgsql"
 	testClusterName = "zabbix-db"
@@ -40,7 +42,7 @@ func TestNames(t *testing.T) {
 	cases := []struct {
 		instance, wantServer, wantFrontend, wantWebService string
 	}{
-		{"test-zabbix", "test-zabbix-server", "test-zabbix-frontend", "test-zabbix-web-service"},
+		{testInstance, testInstance + "-server", testInstance + "-frontend", testInstance + "-web-service"},
 	}
 	for _, tc := range cases {
 		if got := ServerName(tc.instance); got != tc.wantServer {
