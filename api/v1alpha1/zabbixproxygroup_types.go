@@ -95,6 +95,14 @@ type ZabbixProxyGroupStatus struct {
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 
+	// onlineReplicas is the number of the operator-managed member
+	// proxies the Zabbix server currently counts as online: their last
+	// contact with the server (proxy.lastaccess) is inside the group's
+	// failover window — the official per-member availability datum,
+	// since proxy objects expose no dedicated online flag.
+	// +optional
+	OnlineReplicas int32 `json:"onlineReplicas,omitempty"`
+
 	// groupState is the observed state of the Zabbix proxy group as
 	// reported by the server (unknown/offline/recovering/online/degrading,
 	// per the official proxygroup state documentation). Empty while the
@@ -110,6 +118,7 @@ type ZabbixProxyGroupStatus struct {
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.spec.version`
 // +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
+// +kubebuilder:printcolumn:name="Online",type=integer,JSONPath=`.status.onlineReplicas`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ZabbixProxyGroup is the Schema for the zabbixproxygroups API.

@@ -19,6 +19,7 @@ package zabbix
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -192,7 +193,8 @@ func proxyLivenessProbe() *corev1.Probe {
 }
 
 // DesiredProxyGroupSettings renders the API object payload values the
-// operator maintains for the group (failover_delay/min_online with
+// DesiredProxyGroupSettings returns the group settings the operator
+// maintains for the group (failover_delay/min_online with
 // server-side defaults substituted for empty spec fields).
 func DesiredProxyGroupSettings(pg *zabbixv1alpha1.ZabbixProxyGroup) (failoverDelay, minOnline string) {
 	failoverDelay = "1m"
@@ -204,4 +206,45 @@ func DesiredProxyGroupSettings(pg *zabbixv1alpha1.ZabbixProxyGroup) (failoverDel
 		minOnline = fmt.Sprintf("%d", pg.Spec.MinOnline)
 	}
 	return failoverDelay, minOnline
+}
+
+// FailoverDelay returns the group's effective failover window as a
+// duration (an unparsable spec value falls back to the server default,
+// the CRD schema already constrains the format).
+func FailoverDelay(pg *zabbixv1alpha1.ZabbixProxyGroup) time.Duration {
+	spec := "1m"
+	if pg.Spec.FailoverDelay != "" {
+		spec = pg.Spec.FailoverDelay
+	}
+	delay, err := time.ParseDuration(spec)
+	if err != nil {
+		return time.Minute
+	}
+	return delay
+}
+
+// membersOnlineGrace tolerates clock skews between the operator (which
+// compares timestamps against its own now) and the server (which stamps
+// lastaccess with its clock), without stretching the failover window in
+// any meaningful way.
+const membersOnlineGrace = 30 * time.Second
+
+// MembersOnline reports how many of the OPERATOR-MANAGED group members
+// the Zabbix server currently counts as online: their last contact
+// (proxy.lastaccess, the official per-member availability datum; there
+// is no dedicated online flag on proxy objects) lies within the group's
+// failover window. A member that never contacted the server, and other
+// instances' or user-created proxies, are never counted.
+func MembersOnline(members []ProxyMember, instance string, failoverDelay time.Duration, now time.Time) int32 {
+	var online int32
+	for _, m := range members {
+		if !IsManagedProxyRecord(instance, m.Name) {
+			continue
+		}
+		if age := now.Unix() - m.LastContact; m.LastContact > 0 &&
+			time.Duration(age)*time.Second <= failoverDelay+membersOnlineGrace {
+			online++
+		}
+	}
+	return online
 }

@@ -309,6 +309,10 @@ type ProxyMember struct {
 	OperatingMode int64
 	LocalAddress  string
 	LocalPort     string
+	// LastContact is proxy.lastaccess (a read-only timestamp; the API
+	// wire format carries it as a JSON string of a Unix timestamp in
+	// seconds): the last time the member contacted the server.
+	LastContact int64 `json:",omitempty"`
 }
 
 // proxyMemberResult is one proxy.get entry in API wire format.
@@ -319,6 +323,9 @@ type proxyMemberResult struct {
 	OperatingMode int64  `json:"operating_mode,string"`
 	LocalAddress  string `json:"local_address"`
 	LocalPort     string `json:"local_port"`
+	// lastaccess is a Unix timestamp carried as a JSON string (verified
+	// against a live 8.0 endpoint and the API's timestamp column type).
+	LastContact int64 `json:"lastaccess,string"`
 }
 
 // FetchGroupProxies lists the proxies that belong to the group, via

@@ -29,6 +29,9 @@ spec:
     - jsonPath: .status.readyReplicas
       name: Ready
       type: integer
+    - jsonPath: .status.onlineReplicas
+      name: Online
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -255,6 +258,15 @@ spec:
                   observedGeneration is the generation most recently observed by the
                   controller.
                 format: int64
+                type: integer
+              onlineReplicas:
+                description: |-
+                  onlineReplicas is the number of the operator-managed member
+                  proxies the Zabbix server currently counts as online: their last
+                  contact with the server (proxy.lastaccess) is inside the group's
+                  failover window — the official per-member availability datum,
+                  since proxy objects expose no dedicated online flag.
+                format: int32
                 type: integer
               readyReplicas:
                 description: readyReplicas is the number of proxies currently ready.

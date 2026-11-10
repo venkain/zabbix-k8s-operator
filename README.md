@@ -42,12 +42,48 @@ Decisions are tracked with rationale in
 - **Distribution**: plain-YAML install bundle, Helm chart for the operator
   itself later.
 
+## Observability
+
+**Operator metrics.** The manager exposes the standard
+controller-runtime metric families (`controller_runtime_*`,
+`workqueue_*`, `go_*`, process metrics) on `:8443/metrics`, reached
+through the `zabbix-k8s-operator-controller-manager-metrics-service`
+Service. The endpoint is HTTPS with self-signed serving certs and is
+protected by controller-runtime's authentication/authorization filters:
+every request is authenticated with a `TokenReview` and authorized with
+a `SubjectAccessReview`, so scrapers must present a service account
+token whose identity holds the bundled `zabbix-k8s-operator-metrics-reader`
+ClusterRole (grants `get` on the `/metrics` non-resource URL). Probe it
+locally with:
+
+```sh
+TOKEN=$(kubectl -n zabbix-k8s-operator-system create token <scraper-sa>)
+kubectl -n zabbix-k8s-operator-system port-forward \
+  svc/zabbix-k8s-operator-controller-manager-metrics-service 8443:8443
+curl -sk -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8443/metrics
+```
+
+For Prometheus, bind `metrics-reader` to your scraper's service account
+(or install the optional `../prometheus` ServiceMonitor component from
+the kustomize bundle) and the same path serves as a scrape target.
+
+**Zabbix-side status.** `ZabbixProxyGroup.status` surfaces what the
+Zabbix server itself reports: `groupState` (the official proxy group
+state: unknown/offline/recovering/online/degrading) and `onlineReplicas`
+— the count of this instance's member proxies whose last contact with
+the server (`proxy.lastaccess`) is inside the group's failover window,
+the official per-member online criterion. `Zabbix.status` reports
+server HA state and component readiness through conditions.
+
+
 ## Roadmap
 
 - [x] **Phase 0 — requirements & research** (research material maintained separately)
 - [x] **Phase 1 — scaffold**: kubebuilder project, CRD design, core reconcile loops
 - [x] **Phase 2 — database**: CloudNativePG integration, external-DB mode
 - [ ] **Phase 3 — production hardening**: HA topologies, probes, PDBs, metrics, e2e suite on kind
+  - [x] HA topologies, probes, PDBs, metrics (exposure + status surfacing)
+  - [ ] e2e suite on kind
 - [ ] **Phase 4 — publish**: GitHub release, install bundle, docs site
 
 ## Documentation

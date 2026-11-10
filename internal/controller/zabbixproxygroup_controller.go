@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"time"
@@ -233,6 +232,10 @@ func (r *ZabbixProxyGroupReconciler) maintainProxyGroup(ctx context.Context, pg 
 	setPGCond(status, zabbixv1alpha1.ConditionProxyGroupAPIReady, "True",
 		"GroupInSync", fmt.Sprintf("group %q managed (state %s)", pg.Spec.GroupName, state), pg.Generation)
 	status.GroupState = state
+	// Per-member availability: the official online criterion is "last
+	// contact within the failover window" (no online flag exists on
+	// proxy objects — see proxy.lastaccess and the group state docs).
+	status.OnlineReplicas = zabbix.MembersOnline(members, pg.Name, zabbix.FailoverDelay(pg), time.Now())
 	return nil
 }
 
@@ -256,7 +259,7 @@ func syncGroupMembers(ctx context.Context, r *ZabbixProxyGroupReconciler, endpoi
 	// (sorted for determinism only).
 	var stale []string
 	for host, m := range liveByID {
-		if _, wanted := desiredHosts[host]; !wanted && ownedProxyHost(pg.Name, host) {
+		if _, wanted := desiredHosts[host]; !wanted && zabbix.IsManagedProxyRecord(pg.Name, host) {
 			stale = append(stale, strconv.FormatInt(m.ID, 10))
 		}
 	}
@@ -281,17 +284,6 @@ func syncGroupMembers(ctx context.Context, r *ZabbixProxyGroupReconciler, endpoi
 		}
 	}
 	return nil
-}
-
-// ownedProxyHostPattern matches members this instance created
-// (<pg.Name>-proxy-<ordinal>); anything else in the group belongs to
-// someone else and is never touched.
-var ownedProxyHostPattern = regexp.MustCompile(`-proxy-[0-9]+$`)
-
-func ownedProxyHost(instance, host string) bool {
-	return len(host) > len(instance) &&
-		host[:len(instance)] == instance &&
-		ownedProxyHostPattern.MatchString(host[len(instance):])
 }
 
 // finalize deletes the operator-managed server-side configuration before
@@ -347,7 +339,7 @@ func (r *ZabbixProxyGroupReconciler) deleteServerSideGroup(ctx context.Context, 
 	}
 	var memberIDs []string
 	for _, m := range members {
-		if ownedProxyHost(pg.Name, m.Name) {
+		if zabbix.IsManagedProxyRecord(pg.Name, m.Name) {
 			memberIDs = append(memberIDs, strconv.FormatInt(m.ID, 10))
 		}
 	}

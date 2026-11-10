@@ -21,6 +21,8 @@ limitations under the License.
 package zabbix
 
 import (
+	"regexp"
+
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 )
 
@@ -79,6 +81,19 @@ const (
 	resourceSuffixWebService = "-web-service"
 	resourceSuffixProxy      = "-proxy"
 )
+
+// managedProxyRecordPattern matches the server-side proxy records the
+// operator creates for a group (<pg.Name>-proxy-<ordinal>); records not
+// matching the pattern belong to someone else and are never touched.
+var managedProxyRecordPattern = regexp.MustCompile(`-proxy-[0-9]+$`)
+
+// IsManagedProxyRecord reports whether the given server-side proxy
+// record name belongs to the instance's own members.
+func IsManagedProxyRecord(instance, host string) bool {
+	return len(host) > len(instance) &&
+		host[:len(instance)] == instance &&
+		managedProxyRecordPattern.MatchString(host[len(instance):])
+}
 
 // ServerName returns the name for the server's derived objects.
 func ServerName(instance string) string { return instance + resourceSuffixServer }
