@@ -76,6 +76,7 @@ type ZabbixProxyGroupReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;delete
 
 // Reconcile moves the cluster and the referenced Zabbix server toward
 // the state described by the ZabbixProxyGroup resource.
@@ -130,6 +131,21 @@ func (r *ZabbixProxyGroupReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	if err := zabbix.Converge(ctx, r.Client, &pg, zabbix.ProxyHeadlessService(&pg)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("converging proxy headless service: %w", err)
+	}
+
+	// 3.5. Un-wedge the rollout: a member pod that crash-loops on an
+	// older template revision starves its own replacement (it counts
+	// against the RollingUpdate budget and is never Ready, so the
+	// StatefulSet controller cannot make progress). Recycling such pods
+	// lets the controller recreate them from the converged template.
+	// No-op in steady state: only stale-revision pods that are not
+	// Ready (and not already terminating) are removed.
+	var sts appsv1.StatefulSet
+	if err := r.Get(ctx, client.ObjectKey{Namespace: pg.Namespace, Name: zabbix.ProxyName(pg.Name)}, &sts); err != nil {
+		return ctrl.Result{}, fmt.Errorf("getting proxy statefulset: %w", err)
+	}
+	if err := zabbix.RecycleStalePods(ctx, r.Client, &sts); err != nil {
+		return ctrl.Result{}, fmt.Errorf("recycling stale member pods: %w", err)
 	}
 
 	// 4. Deploy readiness.
