@@ -102,6 +102,32 @@ and third-party tutorials are never normative and are not cited here.
   tracks the HA role label, maintained per pod from the official
   `hanode.get` registry through the API. The frontend and proxy group
   members are wired to it.
+- ~~OQ5: Cluster metrics into Zabbix~~ — **resolved 2026-11-10
+  (design + lab verification)**: the official "Kubernetes Cluster by
+  HTTP" template (bundled with Zabbix 8.0; the older per-component
+  Kubernetes templates are deprecated) against kube-state-metrics +
+  the Kubernetes API is the supported path for monitoring the cluster
+  the operator runs in. This slice verified the integration end-to-end
+  on the kind lab (kube-state-metrics 2.9.2 deployed; Zabbix host
+  created through the API with the template linked and
+  `{$KUBE.API.TOKEN}` set; live cluster metrics flowing — cluster
+  CPU/memory utilization, pod/namespace/node/deployment counts, LLD
+  node host). Operator-side automation of the provisioning (deploy
+  KSM, create the host, link the template, set macros) is a candidate
+  later slice behind a spec knob; it is deliberately not built now
+  (OQ3 policy: no speculative features). Lab findings that any future
+  implementation must honor:
+  - the template discovers the KSM endpoint by regex `(.+)kube-state-metrics$`
+    against Endpoints object names — a service named exactly
+    `kube-state-metrics` does NOT match; it needs a name prefix (the
+    official Helm chart prefixes it the same way);
+  - the Endpoints port must be named `http`/`https`/`https-main`;
+  - `{$HTTP.TLS.VERIFY}` defaults to `full` — the cluster CA must be
+    trusted by the Zabbix server container (lab used `none`);
+  - the template's token needs read access plus `services/proxy` (KSM
+    endpoint discovery + scrape goes through the API service proxy)
+    and `nodes/proxy` (kubelet `/metrics/resource` via the API node
+    proxy).
 
 ## Decision log
 
@@ -113,3 +139,7 @@ and third-party tutorials are never normative and are not cited here.
 - 2026-11-10: OQ1–OQ4 closed (see entries above). OQ1/OQ4 were decided
   by the shipped slice 2/3 implementations; OQ2/OQ3 decided explicitly
   (Service-type knob; curated surface + env escape hatch).
+- 2026-11-10: OQ5 closed by design + lab verification — cluster
+  metrics into Zabbix go through the official "Kubernetes Cluster by
+  HTTP" template + kube-state-metrics; operator automation of the
+  provisioning recorded as a candidate later slice, not built now.

@@ -75,6 +75,24 @@ the server (`proxy.lastaccess`) is inside the group's failover window,
 the official per-member online criterion. `Zabbix.status` reports
 server HA state and component readiness through conditions.
 
+**Cluster metrics into Zabbix.** Monitoring of the Kubernetes cluster
+itself uses Zabbix's bundled "Kubernetes Cluster by HTTP" template
+(8.0; the older per-component Kubernetes templates are deprecated):
+deploy kube-state-metrics in the cluster, create a service account
+whose token the template can use (read access plus `services/proxy`
+and `nodes/proxy`), and create a Zabbix host linked to the template
+with `{$KUBE.API.TOKEN}` set. This path is lab-verified end-to-end —
+live cluster CPU/memory utilization, pod/node/namespace/deployment
+metrics, and LLD-discovered node hosts appear in Zabbix. Notable
+integration constraints (see docs/requirements.md, OQ5): the template
+locates the kube-state-metrics endpoint by the name pattern
+`<prefix>kube-state-metrics` (a service named exactly
+`kube-state-metrics` is not matched), its Endpoints port must be named
+`http`/`https`/`https-main`, and `{$HTTP.TLS.VERIFY}=full` requires
+the cluster CA to be trusted by the Zabbix server container.
+Automating this provisioning from a CR (kube-state-metrics + Zabbix
+host + template linkage) is a candidate later slice.
+
 
 ## Roadmap
 
