@@ -352,6 +352,13 @@ type ZabbixStatus struct {
 	// (empty when the server runs in standalone mode).
 	// +optional
 	ServerHA *ServerHAStatus `json:"serverHA,omitempty"`
+
+	// clusterMetricsHostName records the Zabbix host name registered by
+	// the cluster-metrics feature. It is kept on the status so the
+	// disable path can still address the host after the feature flag
+	// (and with it the spec field) is removed.
+	// +optional
+	ClusterMetricsHostName string `json:"clusterMetricsHostName,omitempty"`
 }
 
 // +kubebuilder:object:root=true

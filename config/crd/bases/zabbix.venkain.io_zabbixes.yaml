@@ -751,6 +751,13 @@ spec:
           status:
             description: status defines the observed state of Zabbix
             properties:
+              clusterMetricsHostName:
+                description: |-
+                  clusterMetricsHostName records the Zabbix host name registered by
+                  the cluster-metrics feature. It is kept on the status so the
+                  disable path can still address the host after the feature flag
+                  (and with it the spec field) is removed.
+                type: string
               conditions:
                 description: |-
                   conditions represent the current state of the Zabbix resource.

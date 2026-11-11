@@ -34,6 +34,25 @@ import (
 	"github.com/venkain/zabbix-k8s-operator/internal/zabbix"
 )
 
+const (
+	// Fixtures shared by every Context: the CNPG app Secret, the API
+	// token Secret and the CNPG cluster they point at.
+	dbSecretName       = "zabbix-db-app"
+	apiTokenSecretName = "zbx-api-token"
+	cnpgClusterName    = "zabbix-db"
+)
+
+// dbSecretData returns the connection data the CNPG app Secret carries.
+func dbSecretData() map[string][]byte {
+	return map[string][]byte{
+		"host":     []byte("zabbix-db-rw"),
+		"port":     []byte("5432"),
+		"user":     []byte("zabbix"),
+		"password": []byte("secret"),
+		"dbname":   []byte("zabbix"),
+	}
+}
+
 var _ = Describe("Zabbix Controller", func() {
 	Context("When reconciling a resource", func() {
 		const (
@@ -45,14 +64,8 @@ var _ = Describe("Zabbix Controller", func() {
 
 		newDatabaseSecret := func() *corev1.Secret {
 			return &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "zabbix-db-app", Namespace: resourceNamespace},
-				Data: map[string][]byte{
-					"host":     []byte("zabbix-db-rw"),
-					"port":     []byte("5432"),
-					"user":     []byte("zabbix"),
-					"password": []byte("secret"),
-					"dbname":   []byte("zabbix"),
-				},
+				ObjectMeta: metav1.ObjectMeta{Name: dbSecretName, Namespace: resourceNamespace},
+				Data:       dbSecretData(),
 			}
 		}
 
@@ -62,7 +75,7 @@ var _ = Describe("Zabbix Controller", func() {
 				Spec: zabbixv1alpha1.ZabbixSpec{
 					Version: haTestVersion,
 					Database: zabbixv1alpha1.DatabaseSpec{
-						CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: "zabbix-db"},
+						CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: cnpgClusterName},
 					},
 				},
 			}
@@ -197,11 +210,11 @@ var _ = Describe("Zabbix Controller", func() {
 				Spec: zabbixv1alpha1.ZabbixSpec{
 					Version: haTestVersion,
 					Database: zabbixv1alpha1.DatabaseSpec{
-						CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: "zabbix-db"},
+						CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: cnpgClusterName},
 					},
 					API: &zabbixv1alpha1.APISpec{
 						TokenSecretRef: corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "zbx-api-token"},
+							LocalObjectReference: corev1.LocalObjectReference{Name: apiTokenSecretName},
 							Key:                  haTestTokenKey,
 						},
 					},
@@ -223,14 +236,8 @@ var _ = Describe("Zabbix Controller", func() {
 
 		It("should converge the endpoint, guard deletion, and wait for the monitor token", func() {
 			By("creating the database secret, the API token secret and the Zabbix resource")
-			createSecretIfMissing("zabbix-db-app", map[string][]byte{
-				"host":     []byte("zabbix-db-rw"),
-				"port":     []byte("5432"),
-				"user":     []byte("zabbix"),
-				"password": []byte("secret"),
-				"dbname":   []byte("zabbix"),
-			})
-			createSecretIfMissing("zbx-api-token", map[string][]byte{haTestTokenKey: []byte("test-zabbix-token")})
+			createSecretIfMissing(dbSecretName, dbSecretData())
+			createSecretIfMissing(apiTokenSecretName, map[string][]byte{haTestTokenKey: []byte("test-zabbix-token")})
 			Expect(k8sClient.Create(ctx, newZabbixWithMetrics())).Should(Succeed())
 
 			reconciler := &ZabbixReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -279,7 +286,7 @@ var _ = Describe("Zabbix Controller", func() {
 
 		It("should clean up the cluster-scoped RBAC on deletion", func() {
 			By("removing the API token secret (host cleanup is skipped without a token)")
-			apiSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "zbx-api-token", Namespace: resourceNamespace}}
+			apiSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: apiTokenSecretName, Namespace: resourceNamespace}}
 			err := k8sClient.Delete(ctx, apiSecret)
 			Expect(err == nil || apierrors.IsNotFound(err)).To(BeTrue())
 
@@ -298,6 +305,98 @@ var _ = Describe("Zabbix Controller", func() {
 
 			By("expecting the resource gone (finalizer released)")
 			Expect(k8sClient.Get(ctx, req.NamespacedName, cm)).To(HaveOccurred())
+		})
+	})
+
+	Context("When cluster-metrics is disabled after being enabled", func() {
+		const (
+			cmName            = "test-zabbix-metrics-disable"
+			resourceNamespace = "default"
+		)
+
+		// createSecretIfMissing tolerates the earlier Contexts having
+		// created the same secrets: the envtest suite shares one API
+		// server across Contexts.
+		createSecretIfMissing := func(name string, data map[string][]byte) {
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: resourceNamespace}, Data: data}
+			err := k8sClient.Create(ctx, secret)
+			if err != nil && !apierrors.IsAlreadyExists(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+		}
+
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cmName, Namespace: resourceNamespace}}
+
+		enabledZabbix := func() *zabbixv1alpha1.Zabbix {
+			return &zabbixv1alpha1.Zabbix{
+				ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: resourceNamespace},
+				Spec: zabbixv1alpha1.ZabbixSpec{
+					Version: haTestVersion,
+					Database: zabbixv1alpha1.DatabaseSpec{
+						CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: cnpgClusterName},
+					},
+					API: &zabbixv1alpha1.APISpec{
+						TokenSecretRef: corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: apiTokenSecretName},
+							Key:                  haTestTokenKey,
+						},
+					},
+					ClusterMetrics: &zabbixv1alpha1.ClusterMetricsSpec{
+						ClusterName: "envtest-cluster",
+					},
+				},
+			}
+		}
+
+		It("should remove every cluster-metrics object and release the finalizer", func() {
+			By("enabling the feature and reconciling once")
+			createSecretIfMissing(dbSecretName, dbSecretData())
+			// The enable-side object assertions live in the other
+			// Context; here the disable path is the subject.
+			Expect(k8sClient.Create(ctx, enabledZabbix())).Should(Succeed())
+			reconciler := &ZabbixReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("disabling the feature flag")
+			updated := &zabbixv1alpha1.Zabbix{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).Should(Succeed())
+			updated.Spec.ClusterMetrics = nil
+			updated.Spec.API = nil
+			Expect(k8sClient.Update(ctx, updated)).Should(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("expecting the namespaced cluster-metrics objects gone")
+			ksmDep := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.KubeStateMetricsName(cmName), Namespace: resourceNamespace}, ksmDep)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "KSM deployment must be deleted on disable")
+			monitorSA := &corev1.ServiceAccount{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.MonitorServiceAccountName(cmName), Namespace: resourceNamespace}, monitorSA)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "monitor service account must be deleted on disable")
+			tokenSecret := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.MonitorTokenSecretName(cmName), Namespace: resourceNamespace}, tokenSecret)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "monitor token secret must be deleted on disable")
+
+			By("expecting the cluster-scoped RBAC gone")
+			role := &rbacv1.ClusterRole{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.ClusterMetricsRBACName(enabledZabbix())}, role)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "ClusterRole must be deleted on disable")
+
+			By("expecting the stale condition dropped and the finalizer released")
+			final := &zabbixv1alpha1.Zabbix{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, final)).Should(Succeed())
+			Expect(controllerutil.ContainsFinalizer(final, ClusterMetricsFinalizer)).To(BeFalse())
+			for _, c := range final.Status.Conditions {
+				Expect(c.Type).NotTo(Equal(string(zabbixv1alpha1.ConditionClusterMetricsReady)),
+					"the stale ClusterMetricsReady condition must be dropped on disable")
+			}
+			Expect(final.Status.ClusterMetricsHostName).To(BeEmpty())
 		})
 	})
 })

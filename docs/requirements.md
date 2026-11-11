@@ -190,3 +190,18 @@ and third-party tutorials are never normative and are not cited here.
   finalizer for the server-side host and cluster-scoped RBAC. Full
   details in the OQ5 entry above. Deferred to the next release:
   regenerating `dist/install.yaml` (the CRD changed).
+- 2026-11-11: OQ5 disable path added (e2e-driven find). Kubernetes
+  garbage collection never fires when only the feature flag is
+  removed — the objects' owner (the Zabbix resource) stays alive — so
+  disabling `spec.clusterMetrics` would have orphaned the KSM
+  Deployment/Service/SAs and the cluster-scoped ClusterRole forever.
+  The operator now cleans up on disable itself
+  (`disableClusterMetrics`): best-effort Zabbix host delete (the host
+  name is remembered in the new `status.clusterMetricsHostName` since
+  the spec field is gone; failure leaves an unmanaged host instead of
+  wedging reconciliation), delete of all namespaced objects +
+  ClusterRole/Binding, stale `ClusterMetricsReady` condition dropped,
+  finalizer released. The deletion path (`finalizeClusterMetrics`)
+  keeps its blocking semantics: an API failure there keeps the
+  finalizer and requeues, because at delete time nothing can come
+  back for the resource — silent leaks are worse than retries.

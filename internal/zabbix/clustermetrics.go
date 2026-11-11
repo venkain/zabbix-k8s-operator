@@ -103,7 +103,13 @@ func kubeStateMetricsImage(spec *zabbixv1alpha1.KubeStateMetricsSpec) string {
 // Single replica: the template scrapes one endpoint and two KSM
 // replicas would serve independent counters.
 func KubeStateMetricsDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
-	spec := z.Spec.ClusterMetrics.KubeStateMetrics
+	// ClusterMetrics is nil when the feature was disabled: the delete
+	// path still needs this builder for the object's name, so the
+	// optional knobs fall back to their defaults.
+	var spec *zabbixv1alpha1.KubeStateMetricsSpec
+	if z.Spec.ClusterMetrics != nil {
+		spec = z.Spec.ClusterMetrics.KubeStateMetrics
+	}
 	var resources corev1.ResourceRequirements
 	if spec != nil {
 		resources = spec.Resources

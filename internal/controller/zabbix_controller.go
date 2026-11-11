@@ -81,7 +81,7 @@ type ZabbixReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch
 // Cluster-metrics ingestion: owned ServiceAccount/token Secret and the
@@ -146,6 +146,18 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if err := r.Update(ctx, &z); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding cluster-metrics cleanup finalizer: %w", err)
 		}
+	}
+	// 1c. Feature flag turned OFF while the finalizer (and all the
+	// cluster-metrics side effects) are still around: garbage
+	// collection cannot help — the resource itself stays alive — so
+	// the operator removes the host, the endpoint objects and the
+	// cluster-scoped RBAC itself, then releases the finalizer.
+	if !zabbix.ClusterMetricsIsEnabled(&z) && controllerutil.ContainsFinalizer(&z, ClusterMetricsFinalizer) {
+		if err := r.disableClusterMetrics(ctx, &z); err != nil {
+			return ctrl.Result{}, fmt.Errorf("disabling cluster metrics: %w", err)
+		}
+		dropCondition(status, zabbixv1alpha1.ConditionClusterMetricsReady)
+		status.ClusterMetricsHostName = ""
 	}
 	setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
 		fmt.Sprintf("connection details resolved from secret %s", db.SecretName()), z.Generation)
@@ -488,6 +500,7 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 		"ClusterHostRegistered",
 		fmt.Sprintf("cluster host %q registered with template %q (hostid %d)", cm.ClusterName, zabbix.ClusterTemplate, hostID),
 		z.Generation)
+	status.ClusterMetricsHostName = cm.ClusterName
 	return true
 }
 
@@ -563,14 +576,8 @@ func (r *ZabbixReconciler) finalizeClusterMetrics(ctx context.Context, z *zabbix
 		return ctrl.Result{}, fmt.Errorf("deleting cluster host %q: %w", z.Spec.ClusterMetrics.ClusterName, err)
 	}
 
-	// 2. Remove the cluster-scoped RBAC (ignore already gone).
-	role := zabbix.ClusterMetricsClusterRole(z)
-	if err := r.Delete(ctx, role); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("deleting ClusterRole %s: %w", role.Name, err)
-	}
-	binding := zabbix.ClusterMetricsClusterRoleBinding(z)
-	if err := r.Delete(ctx, binding); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("deleting ClusterRoleBinding %s: %w", binding.Name, err)
+	if err := r.removeClusterMetricsObjects(ctx, z); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// 3. Release the finalizer.
@@ -582,11 +589,89 @@ func (r *ZabbixReconciler) finalizeClusterMetrics(ctx context.Context, z *zabbix
 	return ctrl.Result{}, nil
 }
 
+// disableClusterMetrics runs when the feature flag is turned OFF on a
+// live resource (the finalizer is still present from a previous
+// enablement). Kubernetes garbage collection cannot help here — the
+// objects' owner (the Zabbix resource) stays alive — so the operator
+// removes everything itself: the Zabbix host (best effort; a stale
+// unmanaged host is preferable to wedging reconciliation, unlike the
+// deletion path where the finalizer blocks), the namespaced endpoint
+// objects, and the cluster-scoped RBAC. The finalizer is released:
+// with the feature off there is nothing left to guard.
+func (r *ZabbixReconciler) disableClusterMetrics(ctx context.Context, z *zabbixv1alpha1.Zabbix) error {
+	log := logf.FromContext(ctx)
+	if !controllerutil.ContainsFinalizer(z, ClusterMetricsFinalizer) {
+		return nil
+	}
+
+	// 1. Best-effort server-side host cleanup. The host name lives in
+	// the status (the spec field is gone on disable); without a token
+	// or a recorded host the step is skipped with a log — a stale
+	// unmanaged host is preferable to wedging reconciliation, unlike
+	// the deletion path where the finalizer blocks.
+	hostName := z.Status.ClusterMetricsHostName
+	if hostName == "" {
+		log.Info("No registered cluster host recorded; skipping Zabbix host cleanup on disable")
+	} else if apiTokenValue, err := apiToken(ctx, r.Client, z); err != nil {
+		log.Error(err, "Skipping Zabbix host cleanup on disable: API token unavailable")
+	} else if err := zabbix.DeleteClusterHost(ctx, r.HTTP, zabbix.APIEndpoint(z), apiTokenValue,
+		hostName); err != nil {
+		// The host outlives the feature as an unmanaged Zabbix
+		// object; removing it manually is one API call away.
+		log.Error(err, "Could not delete cluster host on disable; leaving it as an unmanaged host")
+	}
+
+	// 2. Namespaced + cluster-scoped objects.
+	if err := r.removeClusterMetricsObjects(ctx, z); err != nil {
+		return err
+	}
+
+	// 3. Release the finalizer.
+	controllerutil.RemoveFinalizer(z, ClusterMetricsFinalizer)
+	if err := r.Update(ctx, z); err != nil {
+		return fmt.Errorf("removing cluster-metrics cleanup finalizer: %w", err)
+	}
+	log.Info("Cluster-metrics disabled and cleaned up", "instance", z.Name)
+	return nil
+}
+
+// removeClusterMetricsObjects deletes the k8s-side cluster-metrics
+// objects (namespaced endpoint objects and the cluster-scoped RBAC).
+// Already-gone objects are not an error.
+func (r *ZabbixReconciler) removeClusterMetricsObjects(ctx context.Context, z *zabbixv1alpha1.Zabbix) error {
+	for _, obj := range []client.Object{
+		zabbix.KubeStateMetricsDeployment(z),
+		zabbix.KubeStateMetricsService(z),
+		zabbix.KubeStateMetricsServiceAccount(z),
+		zabbix.MonitorServiceAccount(z),
+		zabbix.MonitorTokenSecret(z),
+		zabbix.ClusterMetricsClusterRole(z),
+		zabbix.ClusterMetricsClusterRoleBinding(z),
+	} {
+		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("deleting cluster-metrics object %s %s: %w", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), err)
+		}
+	}
+	return nil
+}
+
 func statefulSetMessage(component string, ready bool) string {
 	if ready {
 		return fmt.Sprintf("%s statefulset is ready", component)
 	}
 	return fmt.Sprintf("%s statefulset is not ready yet", component)
+}
+
+// dropCondition removes one condition type from the status copy — used
+// when a feature is disabled and its (stale) condition must not linger.
+func dropCondition(status *zabbixv1alpha1.ZabbixStatus, t zabbixv1alpha1.ComponentConditionType) {
+	kept := make([]metav1.Condition, 0, len(status.Conditions))
+	for _, c := range status.Conditions {
+		if c.Type != string(t) {
+			kept = append(kept, c)
+		}
+	}
+	status.Conditions = kept
 }
 
 func setCond(status *zabbixv1alpha1.ZabbixStatus, t zabbixv1alpha1.ComponentConditionType, s metav1.ConditionStatus, reason, message string, generation int64) {

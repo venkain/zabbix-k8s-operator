@@ -186,6 +186,13 @@ var _ = Describe("Zabbix stack", Ordered, func() {
 	AfterAll(func() {
 		By("removing the Zabbix instance")
 		_, _ = runKubectl(namespaceFleet, "delete", "zabbix", "zbx", "--wait=false")
+		// A failed spec can leave the cluster-metrics cleanup
+		// finalizer on the resource while the manager is about to be
+		// undeployed — nothing would ever release it, and the CRD
+		// deletion below would hang forever. Force-release any
+		// finalizer left on the resource (best effort).
+		_, _ = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p",
+			`[{"op":"replace","path":"/metadata/finalizers","value":[]}]`)
 
 		By("removing the curl-metrics probe pod")
 		_, _ = runKubectl(operatorNamespace, "delete", "pod", "curl-metrics",
@@ -363,5 +370,134 @@ spec:
 			return strings.TrimSpace(out)
 		}, "45s", "3s").Should(Equal("200"),
 			"the metrics endpoint must admit a token-scoped scraper")
+	})
+
+	// k8s-side cluster-metrics coverage only: the Zabbix-side host
+	// registration is lab-verified (docs/requirements.md, OQ5). Here a
+	// dummy API token makes the operator reach the REAL frontend API
+	// and park on HostRegistrationFailed — the parked state is itself
+	// an assertion that the manager's API wiring (endpoint, bearer
+	// header) resolves end to end, and the precondition for every
+	// k8s-side object (endpoint, monitor identity, RBAC, finalizer) is
+	// exercised on a real cluster, not just envtest.
+	clusterMetricsReason := func(g Gomega) string {
+		reason, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx",
+			`{.status.conditions[?(@.type=="ClusterMetricsReady")].reason}`)
+		g.Expect(err).NotTo(HaveOccurred())
+		return reason
+	}
+
+	It("provisions the cluster-metrics ingestion objects", func() {
+		By("creating a dummy Zabbix API token secret")
+		Expect(kubectlApplyString(`apiVersion: v1
+kind: Secret
+metadata:
+  name: zbx-api-token
+  namespace: ` + namespaceFleet + `
+data:
+  token: ` + base64.StdEncoding.EncodeToString([]byte("e2e-dummy-token")) + `
+`)).To(Succeed())
+
+		By("enabling clusterMetrics on the instance")
+		Expect(kubectlApplyString(`apiVersion: zabbix.venkain.io/v1alpha1
+kind: Zabbix
+metadata:
+  name: zbx
+  namespace: ` + namespaceFleet + `
+spec:
+  version: "8.0"
+  database:
+    cnpg:
+      clusterName: zabbix-db
+  api:
+    tokenSecretRef:
+      name: zbx-api-token
+      key: token
+  clusterMetrics:
+    clusterName: e2e-kind-cluster
+    tlsVerify: none
+  server:
+    replicas: 1
+    agent:
+      enabled: true
+  frontend:
+    replicas: 1
+  webService:
+    replicas: 1
+`)).To(Succeed())
+
+		By("expecting the cleanup finalizer on the resource")
+		finalizers, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx",
+			"{.metadata.finalizers}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(finalizers).To(ContainSubstring("cluster-metrics-cleanup"),
+			"enabling clusterMetrics must add the cleanup finalizer")
+
+		By("expecting the managed kube-state-metrics endpoint to roll out")
+		assertRollout("deployment", "zbx-kube-state-metrics")
+		port, err := kubectlJSONPath(namespaceFleet, "service/zbx-kube-state-metrics",
+			"{.spec.ports[0].name}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(port).To(Equal("http"),
+			"the KSM service port must be named 'http' (template discovery contract)")
+
+		By("expecting the monitor identity and its cluster-scoped RBAC")
+		// Namespaced identities live in the fleet namespace; the RBAC
+		// is cluster-scoped and needs no namespace.
+		for _, obj := range []string{
+			"serviceaccount/zbx-kube-monitor",
+			"secret/zbx-kube-monitor-token",
+		} {
+			_, err := runKubectl(namespaceFleet, "get", obj)
+			Expect(err).NotTo(HaveOccurred(), "cluster-metrics object %s missing", obj)
+		}
+		for _, obj := range []string{
+			"clusterrole/monitoring-zbx-kube-state-metrics",
+			"clusterrolebinding/monitoring-zbx-kube-state-metrics",
+		} {
+			_, err := runKubectl("", "get", obj)
+			Expect(err).NotTo(HaveOccurred(), "cluster-metrics object %s missing", obj)
+		}
+
+		By("expecting the token controller to fill the monitor token")
+		Eventually(func(g Gomega) string {
+			out, err := kubectlJSONPath(namespaceFleet, "secret/zbx-kube-monitor-token",
+				"{.data.token}")
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "60s", "3s").ShouldNot(BeEmpty(),
+			"the service-account token controller must fill the token key")
+
+		By("expecting the host registration to park on the real Zabbix API (dummy token rejected)")
+		Eventually(clusterMetricsReason, "180s", "5s").Should(Equal("HostRegistrationFailed"),
+			"the operator must reach the instance's frontend API and fail authentication")
+
+		By("disabling clusterMetrics again")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p",
+			`[{"op":"remove","path":"/spec/clusterMetrics"},{"op":"remove","path":"/spec/api"}]`)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("expecting the operator to clean up the endpoint objects itself")
+		// Kubernetes garbage collection cannot fire here: the owner
+		// (the Zabbix resource) stays alive when only a spec knob is
+		// removed. The operator's disable path deletes the namespaced
+		// objects and the cluster-scoped RBAC and releases the
+		// finalizer.
+		Eventually(func(g Gomega) bool {
+			_, depErr := runKubectl(namespaceFleet, "get", "deployment/zbx-kube-state-metrics")
+			g.Expect(depErr).To(HaveOccurred(), "the KSM deployment must be deleted by the disable path")
+			_, roleErr := runKubectl("", "get", "clusterrole/monitoring-zbx-kube-state-metrics")
+			g.Expect(roleErr).To(HaveOccurred(), "the ClusterRole must be deleted by the disable path")
+			return true
+		}, "90s", "5s").Should(BeTrue())
+
+		By("expecting the finalizer released and the stack back at full readiness")
+		Eventually(func(g Gomega) string {
+			out, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx", "{.metadata.finalizers}")
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "60s", "5s").ShouldNot(ContainSubstring("cluster-metrics-cleanup"),
+			"disabling the feature must release the cleanup finalizer")
+		assertCondition("Ready")
 	})
 })
