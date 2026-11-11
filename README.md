@@ -97,6 +97,8 @@ spec:
   clusterMetrics:
     clusterName: kind-operator-lab   # the Zabbix host name
     tlsVerify: none                  # full needs the cluster CA in the server
+    # namespace: observability       # default: the Zabbix resource's namespace
+    # namePrefix: my-cluster         # default: the Zabbix resource's name
     # kubeStateMetrics:              # optional image/resources override
     #   image:
     #     tag: v2.13.0
@@ -107,7 +109,21 @@ kube-state-metrics endpoint; in both cases the naming constraints from
 the template's discovery regex hold: the Endpoints name must match
 `<prefix>kube-state-metrics` (a service named exactly
 `kube-state-metrics` is not matched) and the port must be named
-`http`/`https`/`https-main`. The managed role is deliberately minimal —
+`http`/`https`/`https-main`. The derived objects land in the
+resource's own namespace under the resource's name as prefix
+(`<name>-kube-state-metrics`, `<name>-kube-monitor`,
+`<name>-kube-monitor-token`); `namespace` and `namePrefix` override
+the placement — objects placed outside the resource's namespace carry
+no owner references (Kubernetes rejects cross-namespace owners), so
+their lifecycle rides on the disable path and the deletion finalizer
+instead of garbage collection. Placement is recorded on the status at
+enablement and pinned until the feature is disabled: changing the
+overrides mid-flight is ignored (disable, then re-enable to move).
+Removing `spec.clusterMetrics` entirely disables the feature: the
+operator deletes the derived objects and the cluster-scoped RBAC
+itself (garbage collection cannot fire when only the knob is removed)
+and releases the `cluster-metrics-cleanup` finalizer. The managed
+role is deliberately minimal —
 no Secret/configmap reads — so KSM's log may show `forbidden`
 warnings for collectors outside the grant; the template's metrics do
 not need them. `tlsVerify: full` requires the cluster CA to be trusted

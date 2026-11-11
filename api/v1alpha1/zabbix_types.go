@@ -210,14 +210,38 @@ type ClusterMetricsSpec struct {
 	TLSVerify string `json:"tlsVerify,omitempty"`
 
 	// kubeStateMetrics, when set, has the operator deploy and manage a
-	// kube-state-metrics workload (Deployment + Service) in this
-	// namespace. The Service is named <instance>-kube-state-metrics so
-	// the template's endpoint discovery regex matches it. When unset,
+	// kube-state-metrics workload (Deployment + Service) in the
+	// placement namespace. The Service is named <namePrefix>-kube-state-metrics
+	// so the template's endpoint discovery regex matches it. When unset,
 	// the template discovers an existing kube-state-metrics whose
 	// Endpoints name ends in "kube-state-metrics" and whose port is
 	// named "http"/"https".
 	// +optional
 	KubeStateMetrics *KubeStateMetricsSpec `json:"kubeStateMetrics,omitempty"`
+
+	// namespace overrides where the derived cluster-metrics objects
+	// (managed kube-state-metrics workload, monitor identity, token
+	// Secret) are deployed. The namespace must already exist. The
+	// default is the Zabbix resource's own namespace.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace,omitempty"`
+
+	// namePrefix overrides the prefix of the derived cluster-metrics
+	// object names: <namePrefix>-kube-state-metrics (Deployment,
+	// Service, ServiceAccount), <namePrefix>-kube-monitor (monitor
+	// ServiceAccount) and <namePrefix>-kube-monitor-token (token
+	// Secret). The suffixes stay fixed — the template's kube-state-metrics
+	// discovery regex matches names ENDING in "kube-state-metrics".
+	// The default prefix is the Zabbix resource's name. A change of
+	// placement while the feature is enabled is ignored: placement is
+	// recorded in the status at enablement and honored until the
+	// feature is disabled and re-enabled.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=40
+	NamePrefix string `json:"namePrefix,omitempty"`
 }
 
 // KubeStateMetricsSpec configures the operator-managed kube-state-metrics
@@ -359,6 +383,20 @@ type ZabbixStatus struct {
 	// (and with it the spec field) is removed.
 	// +optional
 	ClusterMetricsHostName string `json:"clusterMetricsHostName,omitempty"`
+
+	// clusterMetricsNamespace records the namespace the cluster-metrics
+	// objects were deployed into (spec override or the resource's own
+	// namespace at enablement). The disable and deletion paths address
+	// the objects through it after the spec field is gone.
+	// +optional
+	ClusterMetricsNamespace string `json:"clusterMetricsNamespace,omitempty"`
+
+	// clusterMetricsNamePrefix records the name prefix the
+	// cluster-metrics objects were created with (spec override or the
+	// resource's name at enablement). The disable and deletion paths
+	// address the objects through it after the spec field is gone.
+	// +optional
+	ClusterMetricsNamePrefix string `json:"clusterMetricsNamePrefix,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -112,9 +112,9 @@ spec:
                   kubeStateMetrics:
                     description: |-
                       kubeStateMetrics, when set, has the operator deploy and manage a
-                      kube-state-metrics workload (Deployment + Service) in this
-                      namespace. The Service is named <instance>-kube-state-metrics so
-                      the template's endpoint discovery regex matches it. When unset,
+                      kube-state-metrics workload (Deployment + Service) in the
+                      placement namespace. The Service is named <namePrefix>-kube-state-metrics
+                      so the template's endpoint discovery regex matches it. When unset,
                       the template discovers an existing kube-state-metrics whose
                       Endpoints name ends in "kube-state-metrics" and whose port is
                       named "http"/"https".
@@ -199,6 +199,30 @@ spec:
                             type: object
                         type: object
                     type: object
+                  namePrefix:
+                    description: |-
+                      namePrefix overrides the prefix of the derived cluster-metrics
+                      object names: <namePrefix>-kube-state-metrics (Deployment,
+                      Service, ServiceAccount), <namePrefix>-kube-monitor (monitor
+                      ServiceAccount) and <namePrefix>-kube-monitor-token (token
+                      Secret). The suffixes stay fixed — the template's kube-state-metrics
+                      discovery regex matches names ENDING in "kube-state-metrics".
+                      The default prefix is the Zabbix resource's name. A change of
+                      placement while the feature is enabled is ignored: placement is
+                      recorded in the status at enablement and honored until the
+                      feature is disabled and re-enabled.
+                    maxLength: 40
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  namespace:
+                    description: |-
+                      namespace overrides where the derived cluster-metrics objects
+                      (managed kube-state-metrics workload, monitor identity, token
+                      Secret) are deployed. The namespace must already exist. The
+                      default is the Zabbix resource's own namespace.
+                    maxLength: 63
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
                   tlsVerify:
                     default: none
                     description: |-
@@ -757,6 +781,20 @@ spec:
                   the cluster-metrics feature. It is kept on the status so the
                   disable path can still address the host after the feature flag
                   (and with it the spec field) is removed.
+                type: string
+              clusterMetricsNamePrefix:
+                description: |-
+                  clusterMetricsNamePrefix records the name prefix the
+                  cluster-metrics objects were created with (spec override or the
+                  resource's name at enablement). The disable and deletion paths
+                  address the objects through it after the spec field is gone.
+                type: string
+              clusterMetricsNamespace:
+                description: |-
+                  clusterMetricsNamespace records the namespace the cluster-metrics
+                  objects were deployed into (spec override or the resource's own
+                  namespace at enablement). The disable and deletion paths address
+                  the objects through it after the spec field is gone.
                 type: string
               conditions:
                 description: |-
