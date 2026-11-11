@@ -113,6 +113,52 @@ secret, and the metrics endpoint enforces its authz contract
 A failed run leaves the cluster for debugging; passing runs clean up
 automatically. Duration ≈ 3 minutes.
 
+## Installation
+
+Prerequisite: [CloudNativePG](https://cloudnative-pg.io/) manages the
+database the operator wires in (it is intentionally not managed by the
+operator):
+
+```sh
+kubectl apply --server-side -f \
+  https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.1/cnpg-1.30.1.yaml
+```
+
+Install the operator (CRDs, RBAC, manager) from the committed bundle:
+
+```sh
+kubectl apply -f \
+  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.1.0/dist/install.yaml
+```
+
+Then bootstrap the database and declare the stack — full examples in
+[config/samples](config/samples):
+
+```sh
+kubectl create ns monitoring
+kubectl -n monitoring apply -f - <<'EOF'
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: zabbix-db
+spec:
+  instances: 1
+  bootstrap:
+    initdb:
+      database: zabbix
+      owner: zabbix
+  storage:
+    size: 20Gi
+EOF
+kubectl -n monitoring apply -f \
+  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.1.0/config/samples/zabbix_v1alpha1_zabbix.yaml
+kubectl -n monitoring get zabbix --watch
+```
+
+For development and iteration, deploy from source with
+`make deploy IMG=<registry>/<project>:<tag>` instead.
+
+
 
 
 ## Roadmap
@@ -120,10 +166,10 @@ automatically. Duration ≈ 3 minutes.
 - [x] **Phase 0 — requirements & research** (research material maintained separately)
 - [x] **Phase 1 — scaffold**: kubebuilder project, CRD design, core reconcile loops
 - [x] **Phase 2 — database**: CloudNativePG integration, external-DB mode
-- [ ] **Phase 3 — production hardening**: HA topologies, probes, PDBs, metrics, e2e suite on kind
-  - [x] HA topologies, probes, PDBs, metrics (exposure + status surfacing)
-  - [x] e2e suite on kind
+- [x] **Phase 3 — production hardening**: HA topologies, probes, PDBs, metrics, e2e suite on kind
 - [ ] **Phase 4 — publish**: GitHub release, install bundle, docs site
+  - [x] Install bundle (dist/install.yaml) + v0.1.0 release
+  - [ ] docs site
 
 ## Documentation
 

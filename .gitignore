@@ -1,7 +1,6 @@
 # Binaries
 bin/
 /manager
-dist/
 
 # Test / coverage artifacts
 cover.out
