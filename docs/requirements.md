@@ -128,6 +128,47 @@ and third-party tutorials are never normative and are not cited here.
     endpoint discovery + scrape goes through the API service proxy)
     and `nodes/proxy` (kubelet `/metrics/resource` via the API node
     proxy).
+  - **2026-11-11 update: the automation slice shipped** — the knob is
+    real: `spec.clusterMetrics` on the Zabbix CR (optional, off by
+    default; requires `spec.api`). The operator deploys a managed
+    kube-state-metrics Deployment/Service (`<instance>-kube-state-metrics`,
+    port `http`), a monitor ServiceAccount + long-lived token Secret
+    (`<instance>-kube-monitor(-token)`, legacy `kubernetes.io/service-account-token`
+    type filled asynchronously by the token controller), a namespace-
+    embedded shared ClusterRole/Binding (`<ns>-<instance>-kube-state-metrics`,
+    binds BOTH identities), and registers/realigns the Zabbix host by
+    NAME (template resolved by name; ids differ per Zabbix build).
+    Deletion removes host + cluster-scoped RBAC via the
+    `cluster-metrics-cleanup` finalizer (host cleanup is skipped, with
+    a log, when the API token Secret is gone). Lab-verified on the
+    kind lab including take-over of the manually provisioned setup:
+    `ClusterMetricsReady=True/ClusterHostRegistered`, 271 items on the
+    host, 0 unsupported, cluster utilisation + namespace CPU all
+    fresh. Engineering notes honored en route:
+    - Kubernetes privilege-escalation protection: the manager must
+      hold a superset of every rule the generated ClusterRole grants —
+      the first deploy was rejected by the API server until the
+      manager role gained the same read rules (and the generated role
+      was trimmed to what KSM + the template actually need; no
+      secrets/configmaps reads — KSM then logs `forbidden` warnings
+      for its non-granted collectors, which is expected and harmless);
+    - kubebuilder RBAC markers: multiple resources inside one marker
+      are `;`-separated (`resources=nodes;namespaces`) — commas break
+      controller-gen parsing;
+    - the template's "Failed to get Nodes" error is the JSONPath
+      preprocessing step's CUSTOM ERROR message (`error_handler 3`,
+      stored in `error_handler_params`), fired when the KSM scrape
+      contains no `kube_node_info` samples yet — a warm-up transient
+      that self-clears; `kube.namespace.cpu_usage[*]` likewise needs a
+      few minutes of history. Not operator bugs, documented in README;
+    - script items (type 21) catch their own errors and return
+      `{"error": ...}` as the value — item-level errors on dependents
+      come from preprocessing custom handlers, not the script's throw.
+      Script/intermediate items show `lastclock 0` by design
+      (`history=0`), so freshness checks must watch the leaf items.
+    - deferred: regenerate `dist/install.yaml` (CRD changed) with the
+      NEXT release tag — regenerating now would embed a dev image tag
+      in the committed bundle.
 
 ## Decision log
 
@@ -143,3 +184,9 @@ and third-party tutorials are never normative and are not cited here.
   metrics into Zabbix go through the official "Kubernetes Cluster by
   HTTP" template + kube-state-metrics; operator automation of the
   provisioning recorded as a candidate later slice, not built now.
+- 2026-11-11: OQ5 automation slice built and lab-verified:
+  `spec.clusterMetrics` (optional knob) automates kube-state-metrics +
+  monitor identity + RBAC + Zabbix host registration, with a deletion
+  finalizer for the server-side host and cluster-scoped RBAC. Full
+  details in the OQ5 entry above. Deferred to the next release:
+  regenerating `dist/install.yaml` (the CRD changed).

@@ -186,8 +186,57 @@ type WebServiceSpec struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// ClusterMetricsSpec configures the ingestion of Kubernetes cluster
+// metrics into this Zabbix instance via the official "Kubernetes
+// Cluster by HTTP" template: the operator deploys a kube-state-metrics
+// endpoint, provisions a scoped service-account token, and creates the
+// Zabbix host with the template linked. Requires spec.api (the host is
+// managed through the Zabbix API).
+type ClusterMetricsSpec struct {
+	// clusterName is the Zabbix host name for the monitored Kubernetes
+	// cluster (one host per cluster). The operator creates or adopts a
+	// host with this name.
+	// +required
+	ClusterName string `json:"clusterName"`
+
+	// tlsVerify sets the {$HTTP.TLS.VERIFY} macro on the host. "full"
+	// requires the Zabbix server container to trust the Kubernetes API
+	// server CA; "none" skips certificate verification. The default is
+	// "none" (works out of the box; switch to "full" after mounting the
+	// cluster CA into the server).
+	// +kubebuilder:validation:Enum=full;none
+	// +kubebuilder:default=none
+	// +optional
+	TLSVerify string `json:"tlsVerify,omitempty"`
+
+	// kubeStateMetrics, when set, has the operator deploy and manage a
+	// kube-state-metrics workload (Deployment + Service) in this
+	// namespace. The Service is named <instance>-kube-state-metrics so
+	// the template's endpoint discovery regex matches it. When unset,
+	// the template discovers an existing kube-state-metrics whose
+	// Endpoints name ends in "kube-state-metrics" and whose port is
+	// named "http"/"https".
+	// +optional
+	KubeStateMetrics *KubeStateMetricsSpec `json:"kubeStateMetrics,omitempty"`
+}
+
+// KubeStateMetricsSpec configures the operator-managed kube-state-metrics
+// endpoint.
+type KubeStateMetricsSpec struct {
+	// image overrides the kube-state-metrics image. The default is the
+	// lab-verified registry.k8s.io/kube-state-metrics/kube-state-metrics
+	// image at a fixed version.
+	// +optional
+	Image *ImageSpec `json:"image,omitempty"`
+
+	// resources for the kube-state-metrics container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
 // ZabbixSpec defines the desired state of Zabbix.
 // +kubebuilder:validation:XValidation:message="api.tokenSecretRef is required when server.replicas > 1: HA mode needs the Zabbix API for active-node routing",rule="!(has(self.server) && has(self.server.replicas) && self.server.replicas > 1) || (has(self.api) && has(self.api.tokenSecretRef))"
+// +kubebuilder:validation:XValidation:message="clusterMetrics requires spec.api (api.tokenSecretRef): the cluster host is managed through the Zabbix API",rule="!has(self.clusterMetrics) || (has(self.api) && has(self.api.tokenSecretRef))"
 type ZabbixSpec struct {
 	// version is the Zabbix release to deploy (e.g. "8.0" or "7.0"). It
 	// selects the official container image tags and must match the
@@ -217,6 +266,12 @@ type ZabbixSpec struct {
 	// webService configures the Zabbix web service. Deployed by default.
 	// +optional
 	WebService *WebServiceSpec `json:"webService,omitempty"`
+
+	// clusterMetrics turns on ingestion of Kubernetes cluster metrics
+	// into this Zabbix instance (kube-state-metrics endpoint + "Kubernetes
+	// Cluster by HTTP" template host). Optional; off by default.
+	// +optional
+	ClusterMetrics *ClusterMetricsSpec `json:"clusterMetrics,omitempty"`
 }
 
 // HANodeStatus is the observed state of one Zabbix server HA node.
@@ -271,6 +326,11 @@ const (
 	// ConditionWebServiceReady indicates the web service workload is
 	// deployed and its pods are healthy.
 	ConditionWebServiceReady ComponentConditionType = "WebServiceReady"
+
+	// ConditionClusterMetricsReady indicates the cluster-metrics
+	// ingestion (kube-state-metrics endpoint + Zabbix cluster host) is
+	// deployed and registered with the server.
+	ConditionClusterMetricsReady ComponentConditionType = "ClusterMetricsReady"
 )
 
 // ZabbixStatus defines the observed state of Zabbix.

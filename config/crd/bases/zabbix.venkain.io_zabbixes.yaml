@@ -97,6 +97,123 @@ spec:
                 required:
                 - tokenSecretRef
                 type: object
+              clusterMetrics:
+                description: |-
+                  clusterMetrics turns on ingestion of Kubernetes cluster metrics
+                  into this Zabbix instance (kube-state-metrics endpoint + "Kubernetes
+                  Cluster by HTTP" template host). Optional; off by default.
+                properties:
+                  clusterName:
+                    description: |-
+                      clusterName is the Zabbix host name for the monitored Kubernetes
+                      cluster (one host per cluster). The operator creates or adopts a
+                      host with this name.
+                    type: string
+                  kubeStateMetrics:
+                    description: |-
+                      kubeStateMetrics, when set, has the operator deploy and manage a
+                      kube-state-metrics workload (Deployment + Service) in this
+                      namespace. The Service is named <instance>-kube-state-metrics so
+                      the template's endpoint discovery regex matches it. When unset,
+                      the template discovers an existing kube-state-metrics whose
+                      Endpoints name ends in "kube-state-metrics" and whose port is
+                      named "http"/"https".
+                    properties:
+                      image:
+                        description: |-
+                          image overrides the kube-state-metrics image. The default is the
+                          lab-verified registry.k8s.io/kube-state-metrics/kube-state-metrics
+                          image at a fixed version.
+                        properties:
+                          pullPolicy:
+                            description: pullPolicy is the image pull policy.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
+                            type: string
+                          repository:
+                            description: repository replaces the default image repository.
+                            type: string
+                          tag:
+                            description: tag replaces the tag derived from spec.version.
+                            type: string
+                        type: object
+                      resources:
+                        description: resources for the kube-state-metrics container.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This field depends on the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                                request:
+                                  description: |-
+                                    Request is the name chosen for a request in the referenced claim.
+                                    If empty, everything from the claim is made available, otherwise
+                                    only the result of this request.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
+                    type: object
+                  tlsVerify:
+                    default: none
+                    description: |-
+                      tlsVerify sets the {$HTTP.TLS.VERIFY} macro on the host. "full"
+                      requires the Zabbix server container to trust the Kubernetes API
+                      server CA; "none" skips certificate verification. The default is
+                      "none" (works out of the box; switch to "full" after mounting the
+                      cluster CA into the server).
+                    enum:
+                    - full
+                    - none
+                    type: string
+                required:
+                - clusterName
+                type: object
               database:
                 description: database selects the PostgreSQL database backing this
                   deployment.
@@ -628,6 +745,9 @@ spec:
                 mode needs the Zabbix API for active-node routing'
               rule: '!(has(self.server) && has(self.server.replicas) && self.server.replicas
                 > 1) || (has(self.api) && has(self.api.tokenSecretRef))'
+            - message: 'clusterMetrics requires spec.api (api.tokenSecretRef): the
+                cluster host is managed through the Zabbix API'
+              rule: '!has(self.clusterMetrics) || (has(self.api) && has(self.api.tokenSecretRef))'
           status:
             description: status defines the observed state of Zabbix
             properties:

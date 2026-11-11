@@ -77,21 +77,48 @@ server HA state and component readiness through conditions.
 
 **Cluster metrics into Zabbix.** Monitoring of the Kubernetes cluster
 itself uses Zabbix's bundled "Kubernetes Cluster by HTTP" template
-(8.0; the older per-component Kubernetes templates are deprecated):
-deploy kube-state-metrics in the cluster, create a service account
-whose token the template can use (read access plus `services/proxy`
-and `nodes/proxy`), and create a Zabbix host linked to the template
-with `{$KUBE.API.TOKEN}` set. This path is lab-verified end-to-end —
-live cluster CPU/memory utilization, pod/node/namespace/deployment
-metrics, and LLD-discovered node hosts appear in Zabbix. Notable
-integration constraints (see docs/requirements.md, OQ5): the template
-locates the kube-state-metrics endpoint by the name pattern
+(8.0; the older per-component Kubernetes templates are deprecated).
+The operator automates the whole path behind an optional spec knob —
+set `spec.clusterMetrics` and it deploys a managed kube-state-metrics
+endpoint, creates a scoped monitor service account plus a long-lived
+token Secret, provisions the cluster-scoped read RBAC, and registers
+the Zabbix host with the template linked and `{$KUBE.API.TOKEN}` +
+`{$HTTP.TLS.VERIFY}` set — verified live in the kind lab (cluster
+CPU/memory utilization, pod/node/namespace/deployment metrics, and
+LLD node hosts flowing; deletion of the resource removes the host and
+RBAC through the `cluster-metrics-cleanup` finalizer):
+
+```yaml
+spec:
+  api:                       # required: the host is managed via the API
+    tokenSecretRef:
+      name: zbx-api-token
+      key: token
+  clusterMetrics:
+    clusterName: kind-operator-lab   # the Zabbix host name
+    tlsVerify: none                  # full needs the cluster CA in the server
+    # kubeStateMetrics:              # optional image/resources override
+    #   image:
+    #     tag: v2.13.0
+```
+
+When `kubeStateMetrics` is omitted the template discovers an existing
+kube-state-metrics endpoint; in both cases the naming constraints from
+the template's discovery regex hold: the Endpoints name must match
 `<prefix>kube-state-metrics` (a service named exactly
-`kube-state-metrics` is not matched), its Endpoints port must be named
-`http`/`https`/`https-main`, and `{$HTTP.TLS.VERIFY}=full` requires
-the cluster CA to be trusted by the Zabbix server container.
-Automating this provisioning from a CR (kube-state-metrics + Zabbix
-host + template linkage) is a candidate later slice.
+`kube-state-metrics` is not matched) and the port must be named
+`http`/`https`/`https-main`. The managed role is deliberately minimal —
+no Secret/configmap reads — so KSM's log may show `forbidden`
+warnings for collectors outside the grant; the template's metrics do
+not need them. `tlsVerify: full` requires the cluster CA to be trusted
+by the Zabbix server container. The host name is the ownership key:
+the operator adopts (and realigns) an existing host with the same
+name; on resource deletion the host and the cluster-scoped RBAC are
+removed. Right after first enablement the utilisation items can sit
+in `unsupported` state for a few minutes — the template's
+"Failed to get Nodes" error fires while kube-state-metrics' informers
+warm up and clears itself; `kube.namespace.cpu_usage[*]` needs a few
+minutes of history for its `last()` expressions.
 
 ## Testing
 

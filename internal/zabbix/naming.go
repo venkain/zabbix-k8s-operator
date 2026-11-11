@@ -60,6 +60,9 @@ const (
 	ComponentFrontend   = "frontend"
 	ComponentWebService = "web-service"
 	ComponentProxy      = "proxy"
+	// ComponentClusterMetrics marks the cluster-metrics ingestion objects
+	// (kube-state-metrics endpoint + monitor service account).
+	ComponentClusterMetrics = "cluster-metrics"
 
 	// Container ports (official images).
 	ServerPort   = int32(10051)

@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -48,6 +49,18 @@ const databaseRetryDelay = 30 * time.Second
 // cadence converges the -active routing shortly after the server's own
 // takeover decision.
 const haRetryDelay = 15 * time.Second
+
+// clusterMetricsRetryDelay is the requeue delay while cluster-metrics
+// ingestion is converging: the service-account token controller fills
+// the monitor token Secret asynchronously, and the Zabbix API must be
+// reachable for the host registration.
+const clusterMetricsRetryDelay = 30 * time.Second
+
+// ClusterMetricsFinalizer guards the server-side Zabbix host and the
+// cluster-scoped RBAC the feature creates: deleting the resource must
+// remove the host (otherwise the server keeps scraping a dead endpoint)
+// and must not leave orphaned ClusterRoles.
+const ClusterMetricsFinalizer = "zabbix.venkain.io/cluster-metrics-cleanup"
 
 // ZabbixReconciler reconciles a Zabbix object. One resource owns one
 // complete Zabbix deployment: server, frontend, web service, and their
@@ -68,9 +81,26 @@ type ZabbixReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch
+// Cluster-metrics ingestion: owned ServiceAccount/token Secret and the
+// cluster-scoped RBAC both identities need. The manager must hold a
+// superset of the rules it grants (Kubernetes privilege-escalation
+// protection), so these read rules exist in the manager role too.
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=core,resources=nodes;namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=endpoints;services,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims;persistentvolumes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=services/proxy;nodes/proxy,verbs=create;get
+// +kubebuilder:rbac:groups=apps,resources=daemonsets;replicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the cluster toward the state described by the Zabbix
 // resource: resolve the database wiring, converge every owned object,
@@ -89,7 +119,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if !z.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return r.finalizeClusterMetrics(ctx, &z)
 	}
 
 	// The status is built on a copy of the CURRENT status: SetStatusCondition
@@ -106,6 +136,16 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		log.Error(err, "database resolution failed; requeueing")
 		setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionFalse, "DatabaseUnresolved", err.Error(), z.Generation)
 		return persistStatus(ctx, r.Client, &z, *status, databaseRetryDelay)
+	}
+
+	// 1b. The cluster-metrics cleanup finalizer comes before the first
+	// server-side registration below: deletion must always be able to
+	// clean up the Zabbix host and the cluster-scoped RBAC.
+	if zabbix.ClusterMetricsIsEnabled(&z) && !controllerutil.ContainsFinalizer(&z, ClusterMetricsFinalizer) {
+		controllerutil.AddFinalizer(&z, ClusterMetricsFinalizer)
+		if err := r.Update(ctx, &z); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding cluster-metrics cleanup finalizer: %w", err)
+		}
 	}
 	setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
 		fmt.Sprintf("connection details resolved from secret %s", db.SecretName()), z.Generation)
@@ -168,30 +208,18 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// 5. Publish component readiness.
-	serverReady, err := zabbix.StatefulSetIsReady(ctx, r.Client, z.Namespace,
-		zabbix.ServerName(z.Name), zabbix.ServerReplicas(&z))
+	componentsReady, err := r.publishComponentReadiness(ctx, &z, status)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("checking server readiness: %w", err)
+		return ctrl.Result{}, err
 	}
-	setCond(status, zabbixv1alpha1.ConditionServerReady, readyCondition(serverReady), "ServerStatefulSet", statefulSetMessage("server", serverReady), z.Generation)
 
-	frontendReady, err := zabbix.ComponentIsReady(ctx, r.Client, z.Namespace,
-		zabbix.FrontendName(z.Name), frontendReplicas(&z))
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("checking frontend readiness: %w", err)
-	}
-	setCond(status, zabbixv1alpha1.ConditionFrontendReady, readyCondition(frontendReady), "FrontendDeployment", deploymentMessage("frontend", frontendReady), z.Generation)
-
-	componentsReady := serverReady && frontendReady
-
-	if z.Spec.WebService != nil {
-		webServiceReady, err := zabbix.ComponentIsReady(ctx, r.Client, z.Namespace,
-			zabbix.WebServiceName(z.Name), webServiceReplicas(&z))
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("checking web service readiness: %w", err)
-		}
-		setCond(status, zabbixv1alpha1.ConditionWebServiceReady, readyCondition(webServiceReady), "WebServiceDeployment", deploymentMessage("web service", webServiceReady), z.Generation)
-		componentsReady = componentsReady && webServiceReady
+	// 5b. Cluster-metrics ingestion: converge the cluster-scoped RBAC,
+	// wait for the monitor token, and register the cluster host with
+	// the server through the Zabbix API.
+	clusterMetricsDelay := time.Duration(0)
+	if z.Spec.ClusterMetrics != nil {
+		componentsReady = r.ensureClusterMetrics(ctx, &z, status) && componentsReady
+		clusterMetricsDelay = clusterMetricsRetryDelay
 	}
 
 	readyMsg := "all components ready"
@@ -216,6 +244,11 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, fmt.Errorf("maintaining HA roles: %w", err)
 		}
 		requeueDelay = haRetryDelay
+	}
+	if clusterMetricsDelay > requeueDelay {
+		// Keep the drift-check cadence even when ready: the host
+		// registration lives outside Kubernetes and must be realigned.
+		requeueDelay = clusterMetricsDelay
 	}
 
 	return persistStatus(ctx, r.Client, &z, *status, requeueDelay)
@@ -396,6 +429,157 @@ func apiToken(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix) (s
 		return "", fmt.Errorf("API token secret %q has an empty key %q", ref.Name, ref.Key)
 	}
 	return string(token), nil
+}
+
+// ensureClusterMetrics converges the cluster-metrics ingestion and
+// reports readiness. Steps: cluster-scoped RBAC (both identities), the
+// monitor token (the service-account token controller fills the Secret
+// asynchronously), then the Zabbix-side host registration. Failures set
+// the ClusterMetricsReady condition and return false so the next
+// reconcile retries at a human pace.
+func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1alpha1.Zabbix, status *zabbixv1alpha1.ZabbixStatus) bool {
+	log := logf.FromContext(ctx)
+	cm := z.Spec.ClusterMetrics
+
+	// Cluster-scoped objects have no namespaced owner reference, so
+	// they are reconciled here instead of through ConvergeAll and are
+	// removed in the finalizer.
+	role := zabbix.ClusterMetricsClusterRole(z)
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error { return nil }); err != nil {
+		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+			"ClusterRBACFailed", fmt.Sprintf("reconciling ClusterRole %s: %v", role.Name, err), z.Generation)
+		return false
+	}
+	binding := zabbix.ClusterMetricsClusterRoleBinding(z)
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, binding, func() error { return nil }); err != nil {
+		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+			"ClusterRBACFailed", fmt.Sprintf("reconciling ClusterRoleBinding %s: %v", binding.Name, err), z.Generation)
+		return false
+	}
+
+	// The monitor token: created as an empty service-account-token
+	// Secret, filled asynchronously by the token controller.
+	monitorTokenValue, err := monitorToken(ctx, r.Client, z)
+	if err != nil {
+		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+			"MonitorTokenPending", err.Error(), z.Generation)
+		return false
+	}
+
+	apiTokenValue, err := apiToken(ctx, r.Client, z)
+	if err != nil {
+		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+			"APITokenPending", err.Error(), z.Generation)
+		return false
+	}
+
+	hostID, created, err := zabbix.EnsureClusterHost(ctx, r.HTTP, zabbix.APIEndpoint(z), apiTokenValue,
+		cm.ClusterName, monitorTokenValue, cm.TLSVerify)
+	if err != nil {
+		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+			"HostRegistrationFailed", fmt.Sprintf("registering cluster host %q: %v", cm.ClusterName, err), z.Generation)
+		return false
+	}
+	if created {
+		log.Info("Created cluster host", "host", cm.ClusterName, "hostid", hostID)
+	}
+
+	setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionTrue,
+		"ClusterHostRegistered",
+		fmt.Sprintf("cluster host %q registered with template %q (hostid %d)", cm.ClusterName, zabbix.ClusterTemplate, hostID),
+		z.Generation)
+	return true
+}
+
+// publishComponentReadiness checks the workloads' rollout state and
+// publishes the per-component conditions. Returns the aggregate
+// components readiness.
+func (r *ZabbixReconciler) publishComponentReadiness(ctx context.Context, z *zabbixv1alpha1.Zabbix, status *zabbixv1alpha1.ZabbixStatus) (bool, error) {
+	serverReady, err := zabbix.StatefulSetIsReady(ctx, r.Client, z.Namespace,
+		zabbix.ServerName(z.Name), zabbix.ServerReplicas(z))
+	if err != nil {
+		return false, fmt.Errorf("checking server readiness: %w", err)
+	}
+	setCond(status, zabbixv1alpha1.ConditionServerReady, readyCondition(serverReady), "ServerStatefulSet", statefulSetMessage("server", serverReady), z.Generation)
+
+	frontendReady, err := zabbix.ComponentIsReady(ctx, r.Client, z.Namespace,
+		zabbix.FrontendName(z.Name), frontendReplicas(z))
+	if err != nil {
+		return false, fmt.Errorf("checking frontend readiness: %w", err)
+	}
+	setCond(status, zabbixv1alpha1.ConditionFrontendReady, readyCondition(frontendReady), "FrontendDeployment", deploymentMessage("frontend", frontendReady), z.Generation)
+
+	componentsReady := serverReady && frontendReady
+
+	if z.Spec.WebService != nil {
+		webServiceReady, err := zabbix.ComponentIsReady(ctx, r.Client, z.Namespace,
+			zabbix.WebServiceName(z.Name), webServiceReplicas(z))
+		if err != nil {
+			return false, fmt.Errorf("checking web service readiness: %w", err)
+		}
+		setCond(status, zabbixv1alpha1.ConditionWebServiceReady, readyCondition(webServiceReady), "WebServiceDeployment", deploymentMessage("web service", webServiceReady), z.Generation)
+		componentsReady = componentsReady && webServiceReady
+	}
+	return componentsReady, nil
+}
+
+// monitorToken reads the monitor service account's long-lived token
+// from the token Secret. An empty Secret means the token controller has
+// not filled it yet (it runs asynchronously after the ServiceAccount and
+// Secret converge).
+func monitorToken(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix) (string, error) {
+	var secret corev1.Secret
+	if err := c.Get(ctx, client.ObjectKey{
+		Namespace: z.Namespace,
+		Name:      zabbix.MonitorTokenSecretName(z.Name),
+	}, &secret); err != nil {
+		return "", fmt.Errorf("reading monitor token secret: %w", err)
+	}
+	token, ok := secret.Data["token"]
+	if !ok || len(token) == 0 {
+		return "", fmt.Errorf("monitor token Secret %q is not populated yet (token controller pending)", secret.Name)
+	}
+	return string(token), nil
+}
+
+// finalizeClusterMetrics runs when the resource is being deleted: the
+// server-side Zabbix host and the cluster-scoped RBAC have no Kubernetes
+// garbage collection to lean on. An unreachable Zabbix API keeps the
+// finalizer (requeue with backoff) so the host is never leaked silently.
+func (r *ZabbixReconciler) finalizeClusterMetrics(ctx context.Context, z *zabbixv1alpha1.Zabbix) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	if !zabbix.ClusterMetricsIsEnabled(z) || !controllerutil.ContainsFinalizer(z, ClusterMetricsFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	// 1. Remove the server-side host. A missing API token Secret (e.g.
+	// the user deleted it) is logged and skipped: without a token the
+	// host cannot be addressed anyway.
+	if apiTokenValue, err := apiToken(ctx, r.Client, z); err != nil {
+		log.Error(err, "Skipping Zabbix host cleanup: API token unavailable")
+	} else if err := zabbix.DeleteClusterHost(ctx, r.HTTP, zabbix.APIEndpoint(z), apiTokenValue,
+		z.Spec.ClusterMetrics.ClusterName); err != nil {
+		log.Error(err, "Could not delete cluster host")
+		return ctrl.Result{}, fmt.Errorf("deleting cluster host %q: %w", z.Spec.ClusterMetrics.ClusterName, err)
+	}
+
+	// 2. Remove the cluster-scoped RBAC (ignore already gone).
+	role := zabbix.ClusterMetricsClusterRole(z)
+	if err := r.Delete(ctx, role); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("deleting ClusterRole %s: %w", role.Name, err)
+	}
+	binding := zabbix.ClusterMetricsClusterRoleBinding(z)
+	if err := r.Delete(ctx, binding); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("deleting ClusterRoleBinding %s: %w", binding.Name, err)
+	}
+
+	// 3. Release the finalizer.
+	controllerutil.RemoveFinalizer(z, ClusterMetricsFinalizer)
+	if err := r.Update(ctx, z); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing cluster-metrics cleanup finalizer: %w", err)
+	}
+	log.Info("Cluster-metrics cleanup finished", "instance", z.Name)
+	return ctrl.Result{}, nil
 }
 
 func statefulSetMessage(component string, ready bool) string {

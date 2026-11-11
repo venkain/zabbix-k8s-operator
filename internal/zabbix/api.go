@@ -161,6 +161,17 @@ const (
 	outputExtend = "extend"
 	paramOutput  = "output"
 	paramName    = "name"
+	// paramFilter is the request parameter carrying exact-match filters
+	// (hostgroup.get, proxygroup.get, host.get, template.get).
+	paramFilter = "filter"
+	// paramHost matches hosts/templates by technical name.
+	paramHost = "host"
+	// paramTemplateID/paramMacro/paramValue are the host.get select
+	// field names the cluster-metrics host reconciliation reads.
+	paramTemplateID = "templateid"
+	paramMacro      = "macro"
+	paramValue      = "value"
+	paramHostID     = "hostid"
 )
 
 // FetchHANodes queries the HA node registry via hanode.get. The endpoint
@@ -235,7 +246,7 @@ type proxyGroupResult struct {
 func FetchProxyGroup(ctx context.Context, httpClient *http.Client, endpoint, token, name string) (*ProxyGroup, error) {
 	raw, err := callJSONRPC[[]proxyGroupResult](ctx, httpClient, endpoint, token, "proxygroup.get", map[string]any{
 		paramOutput: outputExtend,
-		"filter":    map[string]any{"name": []string{name}},
+		paramFilter: map[string]any{paramName: []string{name}},
 	})
 	if err != nil {
 		return nil, err

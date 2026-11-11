@@ -24,3 +24,15 @@ spec:
     replicas: 1
   webService:
     replicas: 1
+  # Optional: automate Kubernetes cluster monitoring through the
+  # "Kubernetes Cluster by HTTP" template. Requires spec.api. The
+  # operator deploys kube-state-metrics, a monitor service account +
+  # token Secret, the cluster-scoped read RBAC, and registers the
+  # Zabbix host (see README → Observability → Cluster metrics).
+  # clusterMetrics:
+  #   clusterName: kind-operator-lab
+  #   tlsVerify: none
+  #   kubeStateMetrics:
+  #     image:
+  #       tag: v2.9.2
+  #     resources: {}

@@ -77,6 +77,10 @@ func Converge(ctx context.Context, c client.Client, owner client.Object, desired
 		gvk = corev1.SchemeGroupVersion.WithKind("Service")
 	case *policyv1.PodDisruptionBudget:
 		gvk = policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget")
+	case *corev1.ServiceAccount:
+		gvk = corev1.SchemeGroupVersion.WithKind("ServiceAccount")
+	case *corev1.Secret:
+		gvk = corev1.SchemeGroupVersion.WithKind("Secret")
 	default:
 		return fmt.Errorf("unsupported owned object type %T", desired)
 	}
@@ -123,6 +127,19 @@ func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix,
 			WebServiceDeployment(z),
 			WebServiceService(z),
 			WebServiceDisruptionBudget(z),
+		)
+	}
+
+	// Cluster-metrics ingestion (namespaced objects only; the
+	// cluster-scoped RBAC has no namespaced owner and is reconciled by
+	// the controller directly).
+	if z.Spec.ClusterMetrics != nil {
+		objects = append(objects,
+			KubeStateMetricsDeployment(z),
+			KubeStateMetricsService(z),
+			KubeStateMetricsServiceAccount(z),
+			MonitorServiceAccount(z),
+			MonitorTokenSecret(z),
 		)
 	}
 
