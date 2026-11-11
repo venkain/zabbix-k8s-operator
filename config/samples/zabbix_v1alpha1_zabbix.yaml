@@ -32,6 +32,8 @@ spec:
   # clusterMetrics:
   #   clusterName: kind-operator-lab
   #   tlsVerify: none
+  #   namespace: observability   # default: the Zabbix resource's namespace
+  #   namePrefix: my-cluster     # default: the Zabbix resource's name
   #   kubeStateMetrics:
   #     image:
   #       tag: v2.9.2

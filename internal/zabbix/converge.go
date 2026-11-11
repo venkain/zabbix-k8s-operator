@@ -61,8 +61,17 @@ func Converge(ctx context.Context, c client.Client, owner client.Object, desired
 	logger := log.FromContext(ctx).WithValues("object", fmt.Sprintf("%T", desired), "name", desired.GetName())
 
 	// Ownership must be part of the applied configuration so the created
-	// object is owned (and garbage-collected) from birth.
-	if err := controllerutil.SetControllerReference(owner, desired, c.Scheme()); err != nil {
+	// object is owned (and garbage-collected) from birth. Kubernetes
+	// ownership is same-namespace only: a dependent placed in another
+	// namespace (cluster-metrics placement override) gets no owner
+	// reference — the API server rejects cross-namespace ones — and
+	// relies on operator-driven cleanup instead (the disable path and
+	// the deletion finalizer).
+	if desired.GetNamespace() != "" && owner.GetNamespace() != "" &&
+		desired.GetNamespace() != owner.GetNamespace() {
+		logger.V(1).Info("object placed outside the owner's namespace; applying without owner reference",
+			"namespace", desired.GetNamespace())
+	} else if err := controllerutil.SetControllerReference(owner, desired, c.Scheme()); err != nil {
 		return fmt.Errorf("setting controller reference: %w", err)
 	}
 
@@ -130,7 +139,8 @@ func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix,
 		)
 	}
 
-	// Cluster-metrics ingestion (namespaced objects only; the
+	// Cluster-metrics ingestion (namespaced objects, in the placement
+	// namespace — the resource's own namespace or the override; the
 	// cluster-scoped RBAC has no namespaced owner and is reconciled by
 	// the controller directly).
 	if z.Spec.ClusterMetrics != nil {

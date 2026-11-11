@@ -158,6 +158,8 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		dropCondition(status, zabbixv1alpha1.ConditionClusterMetricsReady)
 		status.ClusterMetricsHostName = ""
+		status.ClusterMetricsNamespace = ""
+		status.ClusterMetricsNamePrefix = ""
 	}
 	setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
 		fmt.Sprintf("connection details resolved from secret %s", db.SecretName()), z.Generation)
@@ -453,6 +455,16 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 	log := logf.FromContext(ctx)
 	cm := z.Spec.ClusterMetrics
 
+	// Record the placement (namespace + name prefix of the derived
+	// objects) on the status BEFORE anything else: the disable and
+	// deletion paths address the objects through this record once the
+	// spec field is gone, and it is what pins the placement while the
+	// feature stays enabled (a mid-flight override change is ignored).
+	// Writing it unconditionally is idempotent — the resolver honors
+	// the record over the spec from now on.
+	status.ClusterMetricsNamespace = zabbix.ClusterMetricsNamespace(z)
+	status.ClusterMetricsNamePrefix = zabbix.ClusterMetricsNamePrefix(z)
+
 	// Cluster-scoped objects have no namespaced owner reference, so
 	// they are reconciled here instead of through ConvergeAll and are
 	// removed in the finalizer.
@@ -543,8 +555,8 @@ func (r *ZabbixReconciler) publishComponentReadiness(ctx context.Context, z *zab
 func monitorToken(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix) (string, error) {
 	var secret corev1.Secret
 	if err := c.Get(ctx, client.ObjectKey{
-		Namespace: z.Namespace,
-		Name:      zabbix.MonitorTokenSecretName(z.Name),
+		Namespace: zabbix.ClusterMetricsNamespace(z),
+		Name:      zabbix.MonitorTokenSecretName(zabbix.ClusterMetricsNamePrefix(z)),
 	}, &secret); err != nil {
 		return "", fmt.Errorf("reading monitor token secret: %w", err)
 	}

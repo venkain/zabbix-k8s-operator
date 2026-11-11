@@ -205,3 +205,15 @@ and third-party tutorials are never normative and are not cited here.
   keeps its blocking semantics: an API failure there keeps the
   finalizer and requeues, because at delete time nothing can come
   back for the resource — silent leaks are worse than retries.
+- 2026-11-11: OQ5 placement overrides (`spec.clusterMetrics.namespace`
+  + `namePrefix`). Defaults stay the resource's own namespace and
+  name. Placement is recorded on the status at enablement
+  (`clusterMetricsNamespace`/`clusterMetricsNamePrefix`) and pinned
+  until disable: mid-flight override changes are ignored (disable +
+  re-enable to move) — otherwise a namespace change would orphan the
+  old objects exactly like the disable bug did. Cross-namespace
+  objects carry no owner references (k8s rejects cross-namespace
+  owners): their cleanup rides entirely on the operator-driven
+  disable path and the deletion finalizer. ClusterRole/Binding names
+  embed the placement namespace, so two instances picking the same
+  namespace do not fight over one role.

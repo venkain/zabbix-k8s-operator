@@ -76,10 +76,49 @@ func MonitorTokenSecretName(instance string) string { return instance + "-kube-m
 // ClusterMetricsRBACName returns the cluster-scoped ClusterRole /
 // ClusterRoleBinding name for both cluster-metrics identities (the
 // kube-state-metrics pod and the monitor account). The names embed the
-// namespace: ClusterRoles are cluster-scoped, and two instances in
-// different namespaces must not fight over one shared role.
+// placement namespace: ClusterRoles are cluster-scoped, and two
+// instances in different namespaces must not fight over one shared
+// role.
 func ClusterMetricsRBACName(z *zabbixv1alpha1.Zabbix) string {
-	return fmt.Sprintf("%s-%s", z.Namespace, KubeStateMetricsName(z.Name))
+	return fmt.Sprintf("%s-%s", clusterMetricsNamespaceOf(z), KubeStateMetricsName(clusterMetricsNamePrefixOf(z)))
+}
+
+// ClusterMetricsNamespace resolves the placement namespace of the
+// derived cluster-metrics objects. Priority: the status record
+// (enable-time truth, what the disable/deletion paths must use after
+// the spec field is gone) → the spec override → the Zabbix resource's
+// own namespace. The status record also pins the placement while the
+// feature is enabled: changing the spec override mid-flight is ignored
+// (disable + re-enable to move).
+func ClusterMetricsNamespace(z *zabbixv1alpha1.Zabbix) string {
+	return clusterMetricsNamespaceOf(z)
+}
+
+// ClusterMetricsNamePrefix resolves the name prefix of the derived
+// cluster-metrics object names. Same priority as the placement
+// namespace: status record → spec override → the resource's name.
+func ClusterMetricsNamePrefix(z *zabbixv1alpha1.Zabbix) string {
+	return clusterMetricsNamePrefixOf(z)
+}
+
+func clusterMetricsNamespaceOf(z *zabbixv1alpha1.Zabbix) string {
+	if z.Status.ClusterMetricsNamespace != "" {
+		return z.Status.ClusterMetricsNamespace
+	}
+	if z.Spec.ClusterMetrics != nil && z.Spec.ClusterMetrics.Namespace != "" {
+		return z.Spec.ClusterMetrics.Namespace
+	}
+	return z.Namespace
+}
+
+func clusterMetricsNamePrefixOf(z *zabbixv1alpha1.Zabbix) string {
+	if z.Status.ClusterMetricsNamePrefix != "" {
+		return z.Status.ClusterMetricsNamePrefix
+	}
+	if z.Spec.ClusterMetrics != nil && z.Spec.ClusterMetrics.NamePrefix != "" {
+		return z.Spec.ClusterMetrics.NamePrefix
+	}
+	return z.Name
 }
 
 // kubeStateMetricsImage resolves the KSM image from the optional
@@ -114,22 +153,22 @@ func KubeStateMetricsDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 	if spec != nil {
 		resources = spec.Resources
 	}
-	podLabels := commonLabels(z.Name, ComponentClusterMetrics)
+	podLabels := commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics)
 	replicas := int32(1)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      KubeStateMetricsName(z.Name),
-			Namespace: z.Namespace,
+			Name:      KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
+			Namespace: clusterMetricsNamespaceOf(z),
 			Labels:    podLabels,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(z.Name, ComponentClusterMetrics)},
+			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: KubeStateMetricsName(z.Name),
+					ServiceAccountName: KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
 					Containers: []corev1.Container{{
 						Name:            "kube-state-metrics",
 						Image:           kubeStateMetricsImage(spec),
@@ -153,13 +192,13 @@ func KubeStateMetricsDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 func KubeStateMetricsService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      KubeStateMetricsName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    commonLabels(z.Name, ComponentClusterMetrics),
+			Name:      KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
+			Namespace: clusterMetricsNamespaceOf(z),
+			Labels:    commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: selectorLabels(z.Name, ComponentClusterMetrics),
+			Selector: selectorLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
 			Ports: []corev1.ServicePort{{
 				Name:       portNameHTTP,
 				Port:       KubeStateMetricsPort,
@@ -176,9 +215,9 @@ func KubeStateMetricsService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 func KubeStateMetricsServiceAccount(z *zabbixv1alpha1.Zabbix) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      KubeStateMetricsName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    commonLabels(z.Name, ComponentClusterMetrics),
+			Name:      KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
+			Namespace: clusterMetricsNamespaceOf(z),
+			Labels:    commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
 		},
 	}
 }
@@ -189,9 +228,9 @@ func KubeStateMetricsServiceAccount(z *zabbixv1alpha1.Zabbix) *corev1.ServiceAcc
 func MonitorServiceAccount(z *zabbixv1alpha1.Zabbix) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      MonitorServiceAccountName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    commonLabels(z.Name, ComponentClusterMetrics),
+			Name:      MonitorServiceAccountName(clusterMetricsNamePrefixOf(z)),
+			Namespace: clusterMetricsNamespaceOf(z),
+			Labels:    commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
 		},
 		// Nothing mounts this account; keep the projected token out of
 		// any pod template that might reference it by accident.
@@ -207,11 +246,11 @@ func MonitorServiceAccount(z *zabbixv1alpha1.Zabbix) *corev1.ServiceAccount {
 func MonitorTokenSecret(z *zabbixv1alpha1.Zabbix) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      MonitorTokenSecretName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    commonLabels(z.Name, ComponentClusterMetrics),
+			Name:      MonitorTokenSecretName(clusterMetricsNamePrefixOf(z)),
+			Namespace: clusterMetricsNamespaceOf(z),
+			Labels:    commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
 			Annotations: map[string]string{
-				serviceAccountNameAnnotation: MonitorServiceAccountName(z.Name),
+				serviceAccountNameAnnotation: MonitorServiceAccountName(clusterMetricsNamePrefixOf(z)),
 			},
 		},
 		Type: serviceAccountTokenSecretType,
@@ -231,7 +270,7 @@ func ClusterMetricsClusterRole(z *zabbixv1alpha1.Zabbix) *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ClusterMetricsRBACName(z),
-			Labels: commonLabels(z.Name, ComponentClusterMetrics),
+			Labels: commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
 		},
 		Rules: []rbacv1.PolicyRule{
 			{
@@ -282,7 +321,7 @@ func ClusterMetricsClusterRoleBinding(z *zabbixv1alpha1.Zabbix) *rbacv1.ClusterR
 	return &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ClusterMetricsRBACName(z),
-			Labels: commonLabels(z.Name, ComponentClusterMetrics),
+			Labels: commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
 		},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
@@ -292,13 +331,13 @@ func ClusterMetricsClusterRoleBinding(z *zabbixv1alpha1.Zabbix) *rbacv1.ClusterR
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:      rbacv1.ServiceAccountKind,
-				Name:      KubeStateMetricsName(z.Name),
-				Namespace: z.Namespace,
+				Name:      KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
+				Namespace: clusterMetricsNamespaceOf(z),
 			},
 			{
 				Kind:      rbacv1.ServiceAccountKind,
-				Name:      MonitorServiceAccountName(z.Name),
-				Namespace: z.Namespace,
+				Name:      MonitorServiceAccountName(clusterMetricsNamePrefixOf(z)),
+				Namespace: clusterMetricsNamespaceOf(z),
 			},
 		},
 	}

@@ -40,7 +40,21 @@ const (
 	dbSecretName       = "zabbix-db-app"
 	apiTokenSecretName = "zbx-api-token"
 	cnpgClusterName    = "zabbix-db"
+	cmClusterName      = "envtest-cluster"
 )
+
+// createSecretIfMissing tolerates Contexts sharing one envtest API
+// server: the same Secrets are created by more than one Context.
+// The test namespace is fixed for the whole suite.
+//
+//nolint:unparam // the namespace stays "default" for every Context
+func createSecretIfMissing(name, namespace string, data map[string][]byte) {
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Data: data}
+	err := k8sClient.Create(ctx, secret)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
 
 // dbSecretData returns the connection data the CNPG app Secret carries.
 func dbSecretData() map[string][]byte {
@@ -193,17 +207,6 @@ var _ = Describe("Zabbix Controller", func() {
 
 		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cmName, Namespace: resourceNamespace}}
 
-		// createSecretIfMissing tolerates the earlier Context having
-		// created the same secrets: the envtest suite shares one API
-		// server across Contexts.
-		createSecretIfMissing := func(name string, data map[string][]byte) {
-			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: resourceNamespace}, Data: data}
-			err := k8sClient.Create(ctx, secret)
-			if err != nil && !apierrors.IsAlreadyExists(err) {
-				Expect(err).NotTo(HaveOccurred())
-			}
-		}
-
 		newZabbixWithMetrics := func() *zabbixv1alpha1.Zabbix {
 			return &zabbixv1alpha1.Zabbix{
 				ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: resourceNamespace},
@@ -219,7 +222,7 @@ var _ = Describe("Zabbix Controller", func() {
 						},
 					},
 					ClusterMetrics: &zabbixv1alpha1.ClusterMetricsSpec{
-						ClusterName: "envtest-cluster",
+						ClusterName: cmClusterName,
 					},
 				},
 			}
@@ -236,8 +239,8 @@ var _ = Describe("Zabbix Controller", func() {
 
 		It("should converge the endpoint, guard deletion, and wait for the monitor token", func() {
 			By("creating the database secret, the API token secret and the Zabbix resource")
-			createSecretIfMissing(dbSecretName, dbSecretData())
-			createSecretIfMissing(apiTokenSecretName, map[string][]byte{haTestTokenKey: []byte("test-zabbix-token")})
+			createSecretIfMissing(dbSecretName, resourceNamespace, dbSecretData())
+			createSecretIfMissing(apiTokenSecretName, resourceNamespace, map[string][]byte{haTestTokenKey: []byte("test-zabbix-token")})
 			Expect(k8sClient.Create(ctx, newZabbixWithMetrics())).Should(Succeed())
 
 			reconciler := &ZabbixReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -314,17 +317,6 @@ var _ = Describe("Zabbix Controller", func() {
 			resourceNamespace = "default"
 		)
 
-		// createSecretIfMissing tolerates the earlier Contexts having
-		// created the same secrets: the envtest suite shares one API
-		// server across Contexts.
-		createSecretIfMissing := func(name string, data map[string][]byte) {
-			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: resourceNamespace}, Data: data}
-			err := k8sClient.Create(ctx, secret)
-			if err != nil && !apierrors.IsAlreadyExists(err) {
-				Expect(err).NotTo(HaveOccurred())
-			}
-		}
-
 		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cmName, Namespace: resourceNamespace}}
 
 		enabledZabbix := func() *zabbixv1alpha1.Zabbix {
@@ -342,7 +334,7 @@ var _ = Describe("Zabbix Controller", func() {
 						},
 					},
 					ClusterMetrics: &zabbixv1alpha1.ClusterMetricsSpec{
-						ClusterName: "envtest-cluster",
+						ClusterName: cmClusterName,
 					},
 				},
 			}
@@ -350,7 +342,7 @@ var _ = Describe("Zabbix Controller", func() {
 
 		It("should remove every cluster-metrics object and release the finalizer", func() {
 			By("enabling the feature and reconciling once")
-			createSecretIfMissing(dbSecretName, dbSecretData())
+			createSecretIfMissing(dbSecretName, resourceNamespace, dbSecretData())
 			// The enable-side object assertions live in the other
 			// Context; here the disable path is the subject.
 			Expect(k8sClient.Create(ctx, enabledZabbix())).Should(Succeed())
@@ -397,6 +389,111 @@ var _ = Describe("Zabbix Controller", func() {
 					"the stale ClusterMetricsReady condition must be dropped on disable")
 			}
 			Expect(final.Status.ClusterMetricsHostName).To(BeEmpty())
+			Expect(final.Status.ClusterMetricsNamespace).To(BeEmpty())
+			Expect(final.Status.ClusterMetricsNamePrefix).To(BeEmpty())
+		})
+	})
+
+	Context("When clusterMetrics placement is overridden", func() {
+		const (
+			placementName      = "test-zabbix-metrics-place"
+			resourceNamespace  = "default"
+			overrideNamespace  = "cluster-metrics-place"
+			overrideNamePrefix = "custom-ksm"
+		)
+
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: placementName, Namespace: resourceNamespace}}
+
+		It("should deploy into the override namespace with the override prefix and honor the record on disable", func() {
+			By("creating the override namespace, the secrets and the resource")
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: overrideNamespace},
+			})).Should(Succeed())
+			createSecretIfMissing(dbSecretName, resourceNamespace, dbSecretData())
+			createSecretIfMissing(apiTokenSecretName, resourceNamespace, map[string][]byte{haTestTokenKey: []byte("test-zabbix-token")})
+			Expect(k8sClient.Create(ctx, &zabbixv1alpha1.Zabbix{
+				ObjectMeta: metav1.ObjectMeta{Name: placementName, Namespace: resourceNamespace},
+				Spec: zabbixv1alpha1.ZabbixSpec{
+					Version: haTestVersion,
+					Database: zabbixv1alpha1.DatabaseSpec{
+						CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: cnpgClusterName},
+					},
+					API: &zabbixv1alpha1.APISpec{
+						TokenSecretRef: corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: apiTokenSecretName},
+							Key:                  haTestTokenKey,
+						},
+					},
+					ClusterMetrics: &zabbixv1alpha1.ClusterMetricsSpec{
+						ClusterName: cmClusterName,
+						Namespace:   overrideNamespace,
+						NamePrefix:  overrideNamePrefix,
+					},
+				},
+			})).Should(Succeed())
+
+			reconciler := &ZabbixReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("expecting the objects in the override namespace under the override names")
+			ksmDep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.KubeStateMetricsName(overrideNamePrefix), Namespace: overrideNamespace}, ksmDep)).
+				Should(Succeed(), "the KSM deployment must be placed in the override namespace")
+			monitorSA := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.MonitorServiceAccountName(overrideNamePrefix), Namespace: overrideNamespace}, monitorSA)).
+				Should(Succeed())
+			tokenSecret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.MonitorTokenSecretName(overrideNamePrefix), Namespace: overrideNamespace}, tokenSecret)).
+				Should(Succeed())
+
+			By("expecting nothing created in the resource's own namespace")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.KubeStateMetricsName(overrideNamePrefix), Namespace: resourceNamespace},
+				&appsv1.Deployment{})).To(HaveOccurred(), "default-placement lookups must fail")
+
+			By("expecting no owner reference on cross-namespace objects (k8s rejects cross-namespace owners)")
+			Expect(ksmDep.OwnerReferences).To(BeEmpty(),
+				"objects outside the resource's namespace cannot carry owner references")
+
+			By("expecting the cluster-scoped RBAC to embed the override placement")
+			role := &rbacv1.ClusterRole{}
+			placementZabbix := &zabbixv1alpha1.Zabbix{ObjectMeta: metav1.ObjectMeta{
+				Name: placementName, Namespace: resourceNamespace}}
+			placementZabbix.Spec.ClusterMetrics = &zabbixv1alpha1.ClusterMetricsSpec{
+				Namespace: overrideNamespace, NamePrefix: overrideNamePrefix}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.ClusterMetricsRBACName(placementZabbix)}, role)).Should(Succeed())
+
+			By("expecting the placement recorded on the status")
+			updated := &zabbixv1alpha1.Zabbix{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).Should(Succeed())
+			Expect(updated.Status.ClusterMetricsNamespace).To(Equal(overrideNamespace))
+			Expect(updated.Status.ClusterMetricsNamePrefix).To(Equal(overrideNamePrefix))
+
+			By("disabling the feature and expecting the override placement honored")
+			updated.Spec.ClusterMetrics = nil
+			updated.Spec.API = nil
+			Expect(k8sClient.Update(ctx, updated)).Should(Succeed())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.KubeStateMetricsName(overrideNamePrefix), Namespace: overrideNamespace},
+				&appsv1.Deployment{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the override-placed KSM deployment must be deleted")
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: zabbix.ClusterMetricsRBACName(placementZabbix)}, role)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the override-named ClusterRole must be deleted")
+
+			final := &zabbixv1alpha1.Zabbix{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, final)).Should(Succeed())
+			Expect(controllerutil.ContainsFinalizer(final, ClusterMetricsFinalizer)).To(BeFalse())
+			Expect(final.Status.ClusterMetricsNamespace).To(BeEmpty())
+			Expect(final.Status.ClusterMetricsNamePrefix).To(BeEmpty())
 		})
 	})
 })
