@@ -167,9 +167,11 @@ For development and iteration, deploy from source with
 - [x] **Phase 1 — scaffold**: kubebuilder project, CRD design, core reconcile loops
 - [x] **Phase 2 — database**: CloudNativePG integration, external-DB mode
 - [x] **Phase 3 — production hardening**: HA topologies, probes, PDBs, metrics, e2e suite on kind
-- [ ] **Phase 4 — publish**: GitHub release, install bundle, docs site
+- [x] **Phase 4 — publish**: GitHub release, install bundle, docs
   - [x] Install bundle (dist/install.yaml) + v0.1.0 release
-  - [ ] docs site
+  - [x] Docs: README-first — this repo renders on GitHub, so the
+    README + [docs/requirements.md](docs/requirements.md) are the
+    documentation; no separate docs-site build to maintain
 
 ## Documentation
 
