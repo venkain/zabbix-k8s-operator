@@ -93,6 +93,27 @@ the cluster CA to be trusted by the Zabbix server container.
 Automating this provisioning from a CR (kube-state-metrics + Zabbix
 host + template linkage) is a candidate later slice.
 
+## Testing
+
+**Unit/integration:** `make test` — envtest-backed controller tests
+plus builder unit tests (`go test ./...`).
+
+**End-to-end:** `make test-e2e` — Ginkgo suite
+([test/e2e](test/e2e)) that runs against a *fresh dedicated kind
+cluster* (`zabbix-k8s-operator-test-e2e`, deleted and recreated each
+run; never your dev cluster). It builds and loads the manager image,
+deploys CRDs + operator, installs CloudNativePG, bootstraps a
+database cluster, declares a `Zabbix` instance, and asserts the real
+outcomes: the whole stack rolls out with `DatabaseReady`/`Ready`
+conditions and accurate `observedGeneration`, every owned workload
+carries a `maxUnavailable=1` disruption budget that admits
+disruptions, the server wires the database through the CNPG app
+secret, and the metrics endpoint enforces its authz contract
+(unauthorized token → 403, `metrics-reader`-bound token → 200).
+A failed run leaves the cluster for debugging; passing runs clean up
+automatically. Duration ≈ 3 minutes.
+
+
 
 ## Roadmap
 
@@ -101,7 +122,7 @@ host + template linkage) is a candidate later slice.
 - [x] **Phase 2 — database**: CloudNativePG integration, external-DB mode
 - [ ] **Phase 3 — production hardening**: HA topologies, probes, PDBs, metrics, e2e suite on kind
   - [x] HA topologies, probes, PDBs, metrics (exposure + status surfacing)
-  - [ ] e2e suite on kind
+  - [x] e2e suite on kind
 - [ ] **Phase 4 — publish**: GitHub release, install bundle, docs site
 
 ## Documentation

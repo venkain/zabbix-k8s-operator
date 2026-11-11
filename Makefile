@@ -72,22 +72,21 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 KIND_CLUSTER ?= zabbix-k8s-operator-test-e2e
 
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+setup-test-e2e: ## Set up a fresh Kind cluster for e2e tests (recreates if one exists)
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
 	@case "$$($(KIND) get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			echo "Deleting stale Kind cluster '$(KIND_CLUSTER)' (e2e needs deterministic state)..."; \
+			$(KIND) delete cluster --name $(KIND_CLUSTER) ;; \
 	esac
+	$(KIND) create cluster --name $(KIND_CLUSTER)
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	CERT_MANAGER_INSTALL_SKIP=true KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout=35m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e

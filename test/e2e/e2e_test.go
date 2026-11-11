@@ -20,11 +20,12 @@ limitations under the License.
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -33,307 +34,334 @@ import (
 	"github.com/venkain/zabbix-k8s-operator/test/utils"
 )
 
-// namespace where the project is deployed in
-const namespace = "zabbix-k8s-operator-system"
+// namespaceFleet is the namespace the monitored stack (Zabbix instance
+// and its CloudNativePG database) lives in; the operator itself runs
+// in the operator-system namespace from config/default.
+const namespaceFleet = "monitoring"
 
-// serviceAccountName created for the project
-const serviceAccountName = "zabbix-k8s-operator-controller-manager"
+// operatorNamespace is where `make deploy` installs the manager.
+const operatorNamespace = "zabbix-k8s-operator-system"
 
-// metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "zabbix-k8s-operator-controller-manager-metrics-service"
+// cnpgRelease is the CloudNativePG consolidated install manifest. The
+// version matches the one used in the development lab so the suite
+// exercises the same operator versions end to end.
+const cnpgRelease = "https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.1/cnpg-1.30.1.yaml"
 
-// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "zabbix-k8s-operator-metrics-binding"
+// pgCluster is the CloudNativePG Cluster the Zabbix instance uses: a
+// single-instance database bootstrapped exactly the way the sample
+// CR expects (database + owner "zabbix"), which makes CNPG publish
+// the zabbix-db-app Secret the operator resolves the stack from.
+const pgCluster = `apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: zabbix-db
+  namespace: ` + namespaceFleet + `
+spec:
+  instances: 1
+  bootstrap:
+    initdb:
+      database: zabbix
+      owner: zabbix
+  storage:
+    size: 5Gi
+`
 
-var _ = Describe("Manager", Ordered, func() {
-	var controllerPodName string
+// zabbixInstance is the stack under test: server + frontend +
+// web service in CNPG database mode, single replica per component.
+const zabbixInstance = `apiVersion: zabbix.venkain.io/v1alpha1
+kind: Zabbix
+metadata:
+  name: zbx
+  namespace: ` + namespaceFleet + `
+spec:
+  version: "8.0"
+  database:
+    cnpg:
+      clusterName: zabbix-db
+  server:
+    replicas: 1
+    agent:
+      enabled: true
+  frontend:
+    replicas: 1
+  webService:
+    replicas: 1
+`
 
-	// Before running the tests, set up the environment by creating the namespace,
-	// enforce the restricted security policy to the namespace, installing CRDs,
-	// and deploying the controller.
-	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-
-		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
-
-		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-	})
-
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace.
-	AfterAll(func() {
-		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
-		_, _ = utils.Run(cmd)
-
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
-
-		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
-	})
-
-	// After each test, check for failures and collect logs, events,
-	// and pod descriptions for debugging.
-	AfterEach(func() {
-		specReport := CurrentSpecReport()
-		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-			controllerLogs, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
-			}
-
-			By("Fetching Kubernetes events")
-			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
-			eventsOutput, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
-			}
-
-			By("Fetching curl-metrics logs")
-			cmd = exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-			metricsOutput, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
-			}
-
-			By("Fetching controller manager pod description")
-			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
-			podDescription, err := utils.Run(cmd)
-			if err == nil {
-				fmt.Println("Pod description:\n", podDescription)
-			} else {
-				fmt.Println("Failed to describe controller pod")
-			}
-		}
-	})
-
-	SetDefaultEventuallyTimeout(2 * time.Minute)
-	SetDefaultEventuallyPollingInterval(time.Second)
-
-	Context("Manager", func() {
-		It("should run successfully", func() {
-			By("validating that the controller-manager pod is running as expected")
-			verifyControllerUp := func(g Gomega) {
-				By("getting the name of the controller-manager pod")
-				cmd := exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
-				)
-
-				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
-				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
-				controllerPodName = podNames[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
-
-				By("validating the pod's status")
-				cmd = exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
-			}
-			Eventually(verifyControllerUp).Should(Succeed())
-		})
-
-		It("should ensure the metrics endpoint is serving metrics", func() {
-			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=zabbix-k8s-operator-metrics-reader",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
-			)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
-
-			By("validating that the metrics service is available")
-			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
-
-			By("getting the service account token")
-			token, err := serviceAccountToken()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(token).NotTo(BeEmpty())
-
-			By("ensuring the controller pod is ready")
-			verifyControllerPodReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pod", controllerPodName, "-n", namespace,
-					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"), "Controller pod not ready")
-			}
-			Eventually(verifyControllerPodReady, 3*time.Minute, time.Second).Should(Succeed())
-
-			By("verifying that the controller manager is serving the metrics server")
-			verifyMetricsServerStarted := func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("Serving metrics server"),
-					"Metrics server not yet started")
-			}
-			Eventually(verifyMetricsServerStarted, 3*time.Minute, time.Second).Should(Succeed())
-
-			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
-
-			By("creating the curl-metrics pod to access the metrics endpoint")
-			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
-				"--namespace", namespace,
-				"--image=curlimages/curl:latest",
-				"--overrides",
-				fmt.Sprintf(`{
-					"spec": {
-						"containers": [{
-							"name": "curl",
-							"image": "curlimages/curl:latest",
-							"command": ["/bin/sh", "-c"],
-							"args": [
-								"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"
-							],
-							"securityContext": {
-								"readOnlyRootFilesystem": true,
-								"allowPrivilegeEscalation": false,
-								"capabilities": {
-									"drop": ["ALL"]
-								},
-								"runAsNonRoot": true,
-								"runAsUser": 1000,
-								"seccompProfile": {
-									"type": "RuntimeDefault"
-								}
-							}
-						}],
-						"serviceAccountName": "%s"
-					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
-
-			By("waiting for the curl-metrics pod to complete.")
-			verifyCurlUp := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "curl-metrics",
-					"-o", "jsonpath={.status.phase}",
-					"-n", namespace)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Succeeded"), "curl pod in wrong status")
-			}
-			Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
-
-			By("getting the metrics by checking curl-metrics logs")
-			verifyMetricsAvailable := func(g Gomega) {
-				metricsOutput, err := getMetricsOutput()
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-				g.Expect(metricsOutput).NotTo(BeEmpty())
-				g.Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
-			}
-			Eventually(verifyMetricsAvailable, 2*time.Minute).Should(Succeed())
-		})
-
-		// +kubebuilder:scaffold:e2e-webhooks-checks
-
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
-	})
-})
-
-// serviceAccountToken returns a token for the specified service account in the given namespace.
-// It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
-// and parsing the resulting token from the API response.
-func serviceAccountToken() (string, error) {
-	const tokenRequestRawString = `{
-		"apiVersion": "authentication.k8s.io/v1",
-		"kind": "TokenRequest"
-	}`
-
-	By("creating temporary file to store the token request")
-	secretName := fmt.Sprintf("%s-token-request", serviceAccountName)
-	tokenRequestFile := filepath.Join("/tmp", secretName)
-	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
+// kubeContext pins every kubectl call to the kind cluster the Makefile
+// created for the suite (kind create cluster switches the kubeconfig
+// current-context as a side effect; a stale kubeconfig otherwise
+// silently points the suite at a different cluster). Empty means
+// unpinned (no KIND_CLUSTER env — not running under the kind target).
+var kubeContext = func() string {
+	cluster := os.Getenv("KIND_CLUSTER")
+	if cluster == "" {
+		return ""
+	}
+	out, err := exec.Command("kubectl", "config", "get-contexts", "-o", "name").Output()
 	if err != nil {
-		return "", err
+		return ""
 	}
-
-	var out string
-	verifyTokenCreation := func(g Gomega) {
-		By("executing kubectl command to create the token")
-		cmd := exec.Command("kubectl", "create", "--raw", fmt.Sprintf(
-			"/api/v1/namespaces/%s/serviceaccounts/%s/token",
-			namespace,
-			serviceAccountName,
-		), "-f", tokenRequestFile)
-
-		output, err := cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred())
-
-		By("parsing the JSON output to extract the token")
-		var token tokenRequest
-		err = json.Unmarshal(output, &token)
-		g.Expect(err).NotTo(HaveOccurred())
-
-		out = token.Status.Token
+	for _, ctx := range strings.Fields(string(out)) {
+		if ctx == "kind-"+cluster {
+			return ctx
+		}
 	}
-	Eventually(verifyTokenCreation).Should(Succeed())
+	return ""
+}()
 
-	return out, err
-}
-
-// getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
-func getMetricsOutput() (string, error) {
-	By("getting the curl-metrics logs")
-	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
+// runKubectl executes kubectl in the test namespace (or cluster-wide
+// when namespace is empty), pinned to the suite's kind context.
+func runKubectl(namespace string, args ...string) (string, error) {
+	if kubeContext != "" {
+		args = append([]string{"--context", kubeContext}, args...)
+	}
+	if namespace != "" {
+		args = append([]string{"-n", namespace}, args...)
+	}
+	cmd := exec.Command("kubectl", args...)
 	return utils.Run(cmd)
 }
 
-// tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
-// containing only the token field that we need to extract.
-type tokenRequest struct {
-	Status struct {
-		Token string `json:"token"`
-	} `json:"status"`
+// kubectlApplyString applies an embedded manifest through a temp file
+// (utils.Run has no stdin channel).
+func kubectlApplyString(manifest string) error {
+	file := filepath.Join(os.TempDir(), fmt.Sprintf("zbx-e2e-%d.yaml", time.Now().UnixNano()))
+	if err := os.WriteFile(file, []byte(manifest), 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(file)
+	_, err := runKubectl("", "apply", "-f", file)
+	return err
 }
+
+// kubectlJSONPath runs kubectl -o jsonpath and trims the output.
+func kubectlJSONPath(namespace, resource, query string) (string, error) {
+	out, err := runKubectl(namespace, "get", resource, "-o", "jsonpath="+query)
+	return strings.TrimSpace(out), err
+}
+
+var _ = Describe("Zabbix stack", Ordered, func() {
+
+	BeforeAll(func() {
+		By("verifying the kubectl context targets the suite's kind cluster")
+		current, err := exec.Command("kubectl", "config", "current-context").Output()
+		Expect(err).NotTo(HaveOccurred())
+		currentContext := strings.TrimSpace(string(current))
+		if kubeContext != "" {
+			Expect(currentContext).To(Equal(kubeContext),
+				"kubectl current-context is %q but the suite targets %q — make targets like `make deploy` run against the current context; switch with `kubectl config use-context %s` first",
+				currentContext, kubeContext, kubeContext)
+		}
+
+		By("creating the fleet namespace")
+		_, err = runKubectl("", "create", "ns", namespaceFleet)
+		Expect(err).NotTo(HaveOccurred(), "failed to create the fleet namespace")
+
+		By("installing the operator CRDs")
+		_, err = utils.Run(exec.Command("make", "install"))
+		Expect(err).NotTo(HaveOccurred(), "failed to install CRDs")
+
+		By("deploying the controller-manager")
+		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
+		Expect(err).NotTo(HaveOccurred(), "failed to deploy the controller-manager")
+		_, err = runKubectl(operatorNamespace, "rollout", "status",
+			"deployment/zabbix-k8s-operator-controller-manager", "--timeout=180s")
+		Expect(err).NotTo(HaveOccurred(), "controller-manager did not roll out")
+
+		By("installing CloudNativePG")
+		_, err = runKubectl("", "apply", "--server-side", "-f", cnpgRelease)
+		Expect(err).NotTo(HaveOccurred(), "failed to install CloudNativePG")
+		_, err = runKubectl("cnpg-system", "rollout", "status",
+			"deployment/cnpg-controller-manager", "--timeout=180s")
+		Expect(err).NotTo(HaveOccurred(), "cnpg controller-manager did not roll out")
+
+		By("creating the CloudNativePG database cluster")
+		Expect(kubectlApplyString(pgCluster)).To(Succeed())
+		_, err = runKubectl(namespaceFleet, "wait", "--for=condition=Ready",
+			"clusters.postgresql.cnpg.io/zabbix-db", "--timeout=600s")
+		Expect(err).NotTo(HaveOccurred(), "the database cluster never became ready")
+	})
+
+	AfterAll(func() {
+		By("removing the Zabbix instance")
+		_, _ = runKubectl(namespaceFleet, "delete", "zabbix", "zbx", "--wait=false")
+
+		By("removing the curl-metrics probe pod")
+		_, _ = runKubectl(operatorNamespace, "delete", "pod", "curl-metrics",
+			"--force", "--grace-period=0", "--ignore-not-found")
+
+		By("removing the metrics reader binding")
+		_, _ = runKubectl("", "delete", "clusterrolebinding", "e2e-metrics-reader",
+			"--ignore-not-found")
+
+		By("undeploying the controller-manager")
+		_, _ = utils.Run(exec.Command("make", "undeploy"))
+
+		By("uninstalling the operator CRDs")
+		_, _ = utils.Run(exec.Command("make", "uninstall"))
+
+		By("removing the fleet namespace (with the database cluster)")
+		_, _ = runKubectl("", "delete", "ns", namespaceFleet, "--wait=false")
+
+		By("removing CloudNativePG")
+		_, _ = runKubectl("", "delete", "-f", cnpgRelease, "--ignore-not-found")
+	})
+
+	AfterEach(func() {
+		specReport := CurrentSpecReport()
+		if !specReport.Failed() {
+			return
+		}
+		By("collecting the controller-manager logs")
+		out, err := runKubectl(operatorNamespace, "get", "pods",
+			"-l", "control-plane=controller-manager", "-o", "name")
+		if err == nil {
+			name := strings.TrimSpace(strings.TrimPrefix(out, "pod/"))
+			if logs, lerr := runKubectl(operatorNamespace, "logs", name, "--tail=100"); lerr == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "controller logs:\n%s", logs)
+			}
+		}
+		By("collecting the fleet events")
+		if events, err := runKubectl(namespaceFleet, "get", "events", "--sort-by=.lastTimestamp"); err == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "fleet events:\n%s", events)
+		}
+	})
+
+	// assertCondition waits for one condition of the instance to be
+	// True (conditions carry observedGeneration semantics from the
+	// status subresource).
+	assertCondition := func(condition string) {
+		_, err := runKubectl(namespaceFleet, "wait", "--for=condition="+condition,
+			"zabbix/zbx", "--timeout=600s")
+		Expect(err).NotTo(HaveOccurred(), "condition %s never became True", condition)
+	}
+
+	// assertRollout waits for one owned workload to reach its desired
+	// ready replicas.
+	assertRollout := func(resource, name string) {
+		_, err := runKubectl(namespaceFleet, "rollout", "status", resource, name, "--timeout=600s")
+		Expect(err).NotTo(HaveOccurred(), "%s %s did not roll out", resource, name)
+	}
+
+	It("brings up the whole stack and reports it through status and conditions", func() {
+		By("declaring the Zabbix instance")
+		Expect(kubectlApplyString(zabbixInstance)).To(Succeed())
+
+		By("waiting for the instance conditions")
+		assertCondition("DatabaseReady")
+		assertCondition("Ready")
+
+		By("waiting for every owned workload to roll out")
+		assertRollout("statefulset", "zbx-server")
+		assertRollout("deployment", "zbx-frontend")
+		assertRollout("deployment", "zbx-web-service")
+
+		By("checking the observedGeneration bookkeeping")
+		generation, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx", "{.metadata.generation}")
+		Expect(err).NotTo(HaveOccurred())
+		observed, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx", "{.status.observedGeneration}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(observed).To(Equal(generation))
+	})
+
+	It("mirrors a disruption budget on every owned workload", func() {
+		for _, name := range []string{"zbx-server", "zbx-frontend", "zbx-web-service"} {
+			maxUnavailable, err := kubectlJSONPath(namespaceFleet, "pdb/"+name,
+				"{.spec.maxUnavailable}")
+			Expect(err).NotTo(HaveOccurred(), "pdb %s missing", name)
+			Expect(maxUnavailable).To(Equal("1"),
+				"pdb %s: drains must be able to take one pod at a time", name)
+
+			disruptionsAllowed, err := kubectlJSONPath(namespaceFleet, "pdb/"+name,
+				"{.status.disruptionsAllowed}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(disruptionsAllowed).NotTo(Equal("0"),
+				"pdb %s must admit at least one voluntary disruption", name)
+		}
+	})
+
+	It("wires the database through the CloudNativePG app secret", func() {
+		host, err := kubectlJSONPath(namespaceFleet, "secret/zabbix-db-app", "{.data.host}")
+		Expect(err).NotTo(HaveOccurred(), "the CNPG app secret is missing")
+		Expect(host).NotTo(BeEmpty())
+		dbName, err := kubectlJSONPath(namespaceFleet, "secret/zabbix-db-app", "{.data.dbname}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(dbName).To(Equal(
+			base64.StdEncoding.EncodeToString([]byte("zabbix"))))
+
+		By("checking the server container carries the resolved database env")
+		env, err := runKubectl(namespaceFleet, "get", "sts/zbx-server",
+			"-o", "jsonpath={.spec.template.spec.containers[0].env}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(env).To(ContainSubstring("DB_SERVER_HOST"),
+			"the server must point at the resolved database")
+	})
+
+	It("exposes the secure metrics endpoint", func() {
+		By("checking the metrics service resolves the manager pods")
+		endpoints, err := kubectlJSONPath(operatorNamespace,
+			"endpoints/zabbix-k8s-operator-controller-manager-metrics-service",
+			"{.subsets[0].addresses[0].ip}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(endpoints).NotTo(BeEmpty(),
+			"the metrics service has no backing endpoints")
+
+		By("running a scraper pod with the manager's service account")
+		// The scrape identity needs the bundled metrics-reader role
+		// (TokenReview/SubjectAccessReview-backed endpoint). Use the
+		// manager's own SA for the probe; a real scraper binds
+		// metrics-reader to its own account instead.
+		Expect(kubectlApplyString(`apiVersion: v1
+kind: Pod
+metadata:
+  name: curl-metrics
+  namespace: ` + operatorNamespace + `
+spec:
+  serviceAccountName: zabbix-k8s-operator-controller-manager
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:latest
+    command: ["sleep", "180"]
+`)).To(Succeed())
+		_, err = runKubectl(operatorNamespace, "wait", "--for=condition=Ready",
+			"pod/curl-metrics", "--timeout=120s")
+		Expect(err).NotTo(HaveOccurred(), "the curl-metrics pod never became ready")
+
+		token, err := runKubectl(operatorNamespace, "create", "token",
+			"zabbix-k8s-operator-controller-manager")
+		Expect(err).NotTo(HaveOccurred())
+		token = strings.TrimSpace(token)
+
+		By("checking an unauthorized token is rejected (authz enforced)")
+		out, err := runKubectl(operatorNamespace, "exec", "curl-metrics", "--",
+			"curl", "-sk", "-H", "Authorization: Bearer "+token,
+			"-o", "/dev/null", "-w", "%{http_code}",
+			"https://zabbix-k8s-operator-controller-manager-metrics-service:8443/metrics")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(out)).To(Equal("403"),
+			"the metrics endpoint must reject tokens without the metrics-reader role")
+
+		By("binding the bundled metrics-reader role to the scraper")
+		_, err = runKubectl("", "create", "clusterrolebinding", "e2e-metrics-reader",
+			"--clusterrole=zabbix-k8s-operator-metrics-reader",
+			"--serviceaccount="+operatorNamespace+":zabbix-k8s-operator-controller-manager")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("scraping the metrics endpoint over HTTPS with the token")
+		// The authz filter caches denied SubjectAccessReview results
+		// for 30s (DenyCacheTTL in controller-runtime's metrics
+		// filter); retry past the cache lifetime until the fresh
+		// authorization takes effect.
+		Eventually(func(g Gomega) string {
+			out, err := runKubectl(operatorNamespace, "exec", "curl-metrics", "--",
+				"curl", "-sk", "-H", "Authorization: Bearer "+token,
+				"-o", "/dev/null", "-w", "%{http_code}",
+				"https://zabbix-k8s-operator-controller-manager-metrics-service:8443/metrics")
+			g.Expect(err).NotTo(HaveOccurred())
+			return strings.TrimSpace(out)
+		}, "45s", "3s").Should(Equal("200"),
+			"the metrics endpoint must admit a token-scoped scraper")
+	})
+})
