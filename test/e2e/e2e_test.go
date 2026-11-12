@@ -527,6 +527,15 @@ spec:
 		Expect(err).NotTo(HaveOccurred())
 
 		By("expecting the KSM workload in the override namespace under the override prefix")
+		// kubectl rollout status fails immediately on a missing
+		// resource (verified), so the deployment must be awaited
+		// explicitly before the rollout check: the operator needs a
+		// reconcile cycle after the patch above.
+		Eventually(func(g Gomega) {
+			_, err := runKubectl(overrideNS, "get",
+				"deployment/"+overridePrefix+"-kube-state-metrics")
+			g.Expect(err).NotTo(HaveOccurred())
+		}, "120s", "2s").Should(Succeed(), "the override-placed KSM deployment was never created")
 		// assertRollout is bound to the fleet namespace; the override
 		// placement needs its own namespace argument.
 		_, err = runKubectl(overrideNS, "rollout", "status",

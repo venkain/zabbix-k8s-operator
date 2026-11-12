@@ -132,6 +132,21 @@ func (r *ZabbixProxyGroupReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := zabbix.Converge(ctx, r.Client, &pg, zabbix.ProxyHeadlessService(&pg)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("converging proxy headless service: %w", err)
 	}
+	// APM Service: the OTLP/gRPC entry point for the group. Converged
+	// only when the collector is enabled; a leftover Service from a
+	// disabled spec is removed so stale listeners are not advertised.
+	if zabbix.APMListenPortIfEnabled(&pg) > 0 {
+		if err := zabbix.Converge(ctx, r.Client, &pg, zabbix.ProxyAPMService(&pg)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("converging proxy APM service: %w", err)
+		}
+	} else {
+		apmSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+			Name: zabbix.ProxyName(pg.Name) + "-apm", Namespace: pg.Namespace,
+		}}
+		if err := r.Delete(ctx, apmSvc); client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, fmt.Errorf("removing stale proxy APM service: %w", err)
+		}
+	}
 	// Voluntary-disruption guard: draining a node takes down at most one
 	// member proxy at a time (etched by DisruptionBudget).
 	if err := zabbix.Converge(ctx, r.Client, &pg, zabbix.ProxyDisruptionBudget(&pg)); err != nil {

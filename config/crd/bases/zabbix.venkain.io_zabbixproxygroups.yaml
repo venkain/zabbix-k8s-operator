@@ -60,6 +60,51 @@ spec:
           spec:
             description: spec defines the desired state of ZabbixProxyGroup
             properties:
+              apm:
+                description: |-
+                  apm enables the OpenTelemetry (APM) collector on every group
+                  member: proxies with APM support accept OTLP/gRPC traces, metrics
+                  and logs and write them to the telemetry provider configured on
+                  the referenced Zabbix resource (spec.telemetryStorage). Zabbix 8.0+
+                  only; ignored on older versions.
+                properties:
+                  listenPort:
+                    description: |-
+                      listenPort is the OTLP/gRPC port the members listen on. Defaults
+                      to 4317 (the OpenTelemetry default receiver port).
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  tlsSecretRef:
+                    description: |-
+                      tlsSecretRef optionally names a Secret with the listener TLS
+                      material (keys ca.crt, tls.crt, tls.key by default; see the caKey,
+                      certKey, keyKey overrides). The mounted files are passed through
+                      the official ZBX_APMTLS* entrypoint interface.
+                    properties:
+                      caKey:
+                        description: |-
+                          caKey is the Secret key holding the CA certificate. Defaults to
+                          "ca.crt". Omit (empty) for a non-TLS listener.
+                        type: string
+                      certKey:
+                        description: |-
+                          certKey is the Secret key holding the listener certificate.
+                          Defaults to "tls.crt".
+                        type: string
+                      keyKey:
+                        description: |-
+                          keyKey is the Secret key holding the listener private key.
+                          Defaults to "tls.key".
+                        type: string
+                      secretName:
+                        description: secretName is the Secret carrying the TLS material.
+                        type: string
+                    required:
+                    - secretName
+                    type: object
+                type: object
               failoverDelay:
                 description: |-
                   failoverDelay is the period during which a group member must

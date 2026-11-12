@@ -75,6 +75,53 @@ type ZabbixProxyGroupSpec struct {
 	// +kubebuilder:validation:Maximum=1000
 	// +optional
 	MinOnline int32 `json:"minOnline,omitempty"`
+
+	// apm enables the OpenTelemetry (APM) collector on every group
+	// member: proxies with APM support accept OTLP/gRPC traces, metrics
+	// and logs and write them to the telemetry provider configured on
+	// the referenced Zabbix resource (spec.telemetryStorage). Zabbix 8.0+
+	// only; ignored on older versions.
+	// +optional
+	APM *ProxyAPMSpec `json:"apm,omitempty"`
+}
+
+// ProxyAPMSpec configures the OTLP/gRPC listener of the group members.
+type ProxyAPMSpec struct {
+	// listenPort is the OTLP/gRPC port the members listen on. Defaults
+	// to 4317 (the OpenTelemetry default receiver port).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	ListenPort *int32 `json:"listenPort,omitempty"`
+
+	// tlsSecretRef optionally names a Secret with the listener TLS
+	// material (keys ca.crt, tls.crt, tls.key by default; see the caKey,
+	// certKey, keyKey overrides). The mounted files are passed through
+	// the official ZBX_APMTLS* entrypoint interface.
+	// +optional
+	TLSSecretRef *ProxyAPMTLS `json:"tlsSecretRef,omitempty"`
+}
+
+// ProxyAPMTLS points at the listener TLS material inside one Secret.
+type ProxyAPMTLS struct {
+	// secretName is the Secret carrying the TLS material.
+	// +required
+	SecretName string `json:"secretName"`
+
+	// caKey is the Secret key holding the CA certificate. Defaults to
+	// "ca.crt". Omit (empty) for a non-TLS listener.
+	// +optional
+	CAKey string `json:"caKey,omitempty"`
+
+	// certKey is the Secret key holding the listener certificate.
+	// Defaults to "tls.crt".
+	// +optional
+	CertKey string `json:"certKey,omitempty"`
+
+	// keyKey is the Secret key holding the listener private key.
+	// Defaults to "tls.key".
+	// +optional
+	KeyKey string `json:"keyKey,omitempty"`
 }
 
 // ZabbixProxyGroupStatus defines the observed state of ZabbixProxyGroup.
