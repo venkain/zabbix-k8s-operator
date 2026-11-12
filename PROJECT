@@ -6,6 +6,10 @@ cliVersion: 4.16.0
 domain: venkain.io
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v2-alpha:
+    manifests: dist/install.yaml
+    output: dist
 projectName: zabbix-k8s-operator
 repo: github.com/venkain/zabbix-k8s-operator
 resources:

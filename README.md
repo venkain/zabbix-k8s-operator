@@ -174,6 +174,17 @@ kubectl apply -f \
   https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.1.0/dist/install.yaml
 ```
 
+Or from the Helm chart (`dist/chart`; the image defaults to the
+scaffold placeholder — set `manager.image.repository`/`tag` to the
+published image):
+
+```sh
+helm install zabbix-k8s-operator dist/chart \
+  --namespace zabbix-k8s-operator-system --create-namespace \
+  --set manager.image.repository=<registry>/zabbix-k8s-operator \
+  --set manager.image.tag=<tag>
+```
+
 Then bootstrap the database and declare the stack — full examples in
 [config/samples](config/samples):
 
