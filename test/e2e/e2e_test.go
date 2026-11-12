@@ -605,4 +605,70 @@ spec:
 			"disabling the feature must release the cleanup finalizer")
 		assertCondition("Ready")
 	})
+
+	It("provisions a managed ClickHouse backend and cleans it up on disable", func() {
+		// Runs after the cluster-metrics specs: the stack is up with no
+		// telemetry storage. Enabling managed mode deploys the backend
+		// (StatefulSet + PVC + Service + operator-generated auth Secret)
+		// and rewires the server/frontend provider environments; the
+		// server rolls out twice (enable + disable).
+		By("enabling managed ClickHouse telemetry storage")
+		_, err := runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
+			{"op":"add","path":"/spec/telemetryStorage","value":{"clickhouse":{"managed":{}}}}
+		]`)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("expecting the operator-generated credentials Secret and the backend workload")
+		// rollout status fails instantly on a missing resource (see the
+		// placement spec), so existence is awaited explicitly first.
+		Eventually(func(g Gomega) {
+			_, err := runKubectl(namespaceFleet, "get",
+				"secret/zbx-clickhouse-auth")
+			g.Expect(err).NotTo(HaveOccurred())
+			_, err = runKubectl(namespaceFleet, "get",
+				"service/zbx-clickhouse")
+			g.Expect(err).NotTo(HaveOccurred())
+			_, err = runKubectl(namespaceFleet, "get",
+				"statefulset/zbx-clickhouse")
+			g.Expect(err).NotTo(HaveOccurred())
+		}, "120s", "2s").Should(Succeed(), "the managed ClickHouse objects were never created")
+		assertRollout("statefulset", "zbx-clickhouse")
+
+		By("expecting the server rewired to the managed endpoint")
+		assertRollout("statefulset", "zbx-server")
+		providerEnv, err := kubectlJSONPath(namespaceFleet,
+			"statefulset/zbx-server",
+			"{.spec.template.spec.containers[0].env[?(@.name=='ZBX_HISTORYPROVIDER_0')].value}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(providerEnv).To(ContainSubstring("zbx-clickhouse"),
+			"the history provider must point at the managed backend Service")
+		Expect(providerEnv).To(ContainSubstring(`"provider":"clickhouse"`))
+
+		By("expecting the TelemetryStorageReady condition")
+		assertCondition("TelemetryStorageReady")
+
+		By("disabling telemetry storage cleans up the backend")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx",
+			"--type", "json", "-p", `[{"op":"remove","path":"/spec/telemetryStorage"}]`)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) bool {
+			_, stsErr := runKubectl(namespaceFleet, "get", "statefulset/zbx-clickhouse")
+			_, svcErr := runKubectl(namespaceFleet, "get", "service/zbx-clickhouse")
+			_, secretErr := runKubectl(namespaceFleet, "get", "secret/zbx-clickhouse-auth")
+			g.Expect(stsErr).To(HaveOccurred(), "the managed ClickHouse StatefulSet must be deleted on disable")
+			g.Expect(svcErr).To(HaveOccurred(), "the managed ClickHouse Service must be deleted on disable")
+			g.Expect(secretErr).To(HaveOccurred(), "the managed ClickHouse auth Secret must be deleted on disable")
+			return true
+		}, "120s", "5s").Should(BeTrue())
+
+		// The provider environments are gone: the server rolls out a
+		// second time and reports readiness without telemetry storage.
+		assertRollout("statefulset", "zbx-server")
+		providerEnv, err = kubectlJSONPath(namespaceFleet,
+			"statefulset/zbx-server",
+			"{.spec.template.spec.containers[0].env[?(@.name=='ZBX_HISTORYPROVIDER_0')].value}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(providerEnv).To(BeEmpty(), "the provider env must be gone after disable")
+		assertCondition("Ready")
+	})
 })

@@ -45,7 +45,7 @@ func testTelemetryZabbix(version string) *zabbixv1alpha1.Zabbix {
 	z.Spec.Version = version
 	z.Spec.TelemetryStorage = &zabbixv1alpha1.TelemetryStorageSpec{
 		ClickHouse: zabbixv1alpha1.ClickHouseSpec{
-			Endpoint: "http://clickhouse.monitoring.svc:8123",
+			Endpoint: testExternalEndpoint,
 			CredentialsSecretRef: zabbixv1alpha1.ClickHouseCredentials{
 				SecretName: testCredsSecretName,
 			},
@@ -106,7 +106,7 @@ func TestServerTelemetryEnvs(t *testing.T) {
 	if history["provider"] != "clickhouse" || telemetry["provider"] != "clickhouse" {
 		t.Errorf("provider = %v / %v", history["provider"], telemetry["provider"])
 	}
-	if history["url"] != "http://clickhouse.monitoring.svc:8123" {
+	if history["url"] != testExternalEndpoint {
 		t.Errorf("history url = %v", history["url"])
 	}
 	if history["db"] != "zabbix" {

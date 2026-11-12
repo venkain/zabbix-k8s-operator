@@ -92,7 +92,7 @@ func jsonValue(s string) string {
 func clickhouseProviderJSON(z *zabbixv1alpha1.Zabbix, valueTypes []string) string {
 	var b strings.Builder
 	b.WriteString(`{"provider":"clickhouse","url":`)
-	b.WriteString(jsonValue(z.Spec.TelemetryStorage.ClickHouse.Endpoint))
+	b.WriteString(jsonValue(ClickHouseEndpoint(z)))
 	b.WriteString(`,"db":`)
 	b.WriteString(jsonValue(clickhouseDatabase(z)))
 	if len(valueTypes) > 0 {
@@ -146,9 +146,9 @@ func ServerTelemetryEnvs(z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
 	if z.Spec.TelemetryStorage == nil || !supportsTelemetry(z.Spec.Version) {
 		return nil
 	}
-	creds := z.Spec.TelemetryStorage.ClickHouse.CredentialsSecretRef
-	usernameFile := secretMountFile(clickhouseCredentialsMount, creds.UsernameKey, "username")
-	passwordFile := secretMountFile(clickhouseCredentialsMount, creds.PasswordKey, "password")
+	creds := ClickHouseCreds(z)
+	usernameFile := creds.UsernameFile
+	passwordFile := creds.PasswordFile
 
 	historyPrefix := envHistoryProviderPrefix + "_0"
 	telemetryPrefix := envTelemetryProviderPrefix + "_0"
@@ -180,9 +180,9 @@ func FrontendTelemetryEnvs(z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
 	if z.Spec.TelemetryStorage == nil || !supportsTelemetry(z.Spec.Version) {
 		return nil
 	}
-	creds := z.Spec.TelemetryStorage.ClickHouse.CredentialsSecretRef
-	usernameFile := secretMountFile(clickhouseCredentialsMount, creds.UsernameKey, "username")
-	passwordFile := secretMountFile(clickhouseCredentialsMount, creds.PasswordKey, "password")
+	creds := ClickHouseCreds(z)
+	usernameFile := creds.UsernameFile
+	passwordFile := creds.PasswordFile
 
 	historyPrefix := envHistoryProviderPrefix + "_0"
 	telemetryPrefix := envTelemetryProviderPrefix + "_0"
@@ -208,9 +208,9 @@ func ProxyTelemetryEnvs(pg *zabbixv1alpha1.ZabbixProxyGroup, z *zabbixv1alpha1.Z
 	if z.Spec.TelemetryStorage == nil || !supportsTelemetry(pg.Spec.Version) {
 		return nil
 	}
-	creds := z.Spec.TelemetryStorage.ClickHouse.CredentialsSecretRef
-	usernameFile := secretMountFile(clickhouseCredentialsMount, creds.UsernameKey, "username")
-	passwordFile := secretMountFile(clickhouseCredentialsMount, creds.PasswordKey, "password")
+	creds := ClickHouseCreds(z)
+	usernameFile := creds.UsernameFile
+	passwordFile := creds.PasswordFile
 
 	telemetryPrefix := envTelemetryProviderPrefix + "_0"
 	env := []corev1.EnvVar{
@@ -274,7 +274,7 @@ func TelemetrySecretVolumes(z *zabbixv1alpha1.Zabbix) []corev1.Volume {
 		Name: volumeClickhouseCredentials,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
-				SecretName: z.Spec.TelemetryStorage.ClickHouse.CredentialsSecretRef.SecretName,
+				SecretName: ClickHouseCreds(z).SecretName,
 			},
 		},
 	}}

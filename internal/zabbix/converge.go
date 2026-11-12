@@ -153,6 +153,15 @@ func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix,
 		)
 	}
 
+	// Managed ClickHouse backend (single node + Service) — the auth
+	// Secret is ensured by the controller before this point.
+	if ManagedClickHouseEnabled(z) {
+		objects = append(objects,
+			ClickHouseStatefulSet(z),
+			ClickHouseService(z),
+		)
+	}
+
 	for _, obj := range objects {
 		if err := Converge(ctx, c, z, obj); err != nil {
 			return fmt.Errorf("converging %T %s: %w", obj, obj.GetName(), err)
