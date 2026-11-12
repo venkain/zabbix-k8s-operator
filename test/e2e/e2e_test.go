@@ -500,4 +500,100 @@ spec:
 			"disabling the feature must release the cleanup finalizer")
 		assertCondition("Ready")
 	})
+
+	It("places cluster-metrics objects through the namespace and namePrefix overrides", func() {
+		// Runs after the cluster-metrics spec: the stack is up, the
+		// dummy token Secret is still there and the feature is off.
+		// A separate override namespace exercises the cross-namespace
+		// placement (no owner references there) without a second stack.
+		const (
+			overrideNS     = "zbx-cm-place"
+			overridePrefix = "placed"
+			rbacName       = overrideNS + "-" + overridePrefix + "-kube-state-metrics"
+		)
+
+		By("creating the override namespace")
+		_, err := runKubectl("", "create", "ns", overrideNS)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_, _ = runKubectl("", "delete", "ns", overrideNS, "--wait=false")
+		})
+
+		By("enabling clusterMetrics with the placement overrides")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
+			{"op":"add","path":"/spec/api","value":{"tokenSecretRef":{"name":"zbx-api-token","key":"token"}}},
+			{"op":"add","path":"/spec/clusterMetrics","value":{"clusterName":"e2e-kind-cluster","tlsVerify":"none","namespace":"`+overrideNS+`","namePrefix":"`+overridePrefix+`"}}
+		]`)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("expecting the KSM workload in the override namespace under the override prefix")
+		// assertRollout is bound to the fleet namespace; the override
+		// placement needs its own namespace argument.
+		_, err = runKubectl(overrideNS, "rollout", "status",
+			"deployment/"+overridePrefix+"-kube-state-metrics", "--timeout=600s")
+		Expect(err).NotTo(HaveOccurred(), "the override-placed KSM deployment did not roll out")
+
+		By("expecting the monitor identity in the override namespace")
+		for _, obj := range []string{
+			"serviceaccount/" + overridePrefix + "-kube-monitor",
+			"secret/" + overridePrefix + "-kube-monitor-token",
+		} {
+			_, err := runKubectl(overrideNS, "get", obj)
+			Expect(err).NotTo(HaveOccurred(), "override-placed object %s missing", obj)
+		}
+
+		By("expecting nothing placed in the resource's own namespace under the override prefix")
+		_, defErr := runKubectl(namespaceFleet, "get",
+			"deployment/"+overridePrefix+"-kube-state-metrics")
+		Expect(defErr).To(HaveOccurred(), "default-placement lookup must fail for the override prefix")
+
+		By("expecting the cluster-scoped RBAC to embed the placement namespace")
+		for _, obj := range []string{
+			"clusterrole/" + rbacName,
+			"clusterrolebinding/" + rbacName,
+		} {
+			_, err := runKubectl("", "get", obj)
+			Expect(err).NotTo(HaveOccurred(), "override RBAC object %s missing", obj)
+		}
+
+		By("expecting no owner references on cross-namespace objects")
+		owners, err := kubectlJSONPath(overrideNS,
+			"deployment/"+overridePrefix+"-kube-state-metrics", "{.metadata.ownerReferences}")
+		Expect(err).NotTo(HaveOccurred())
+		// A missing field jsonpaths to an empty string; any output
+		// would mean a (rejected-by-design) owner reference leaked.
+		Expect(owners).To(BeEmpty(),
+			"k8s rejects cross-namespace owner references; placement objects must not carry one")
+
+		By("expecting the placement recorded on the status")
+		Eventually(func(g Gomega) string {
+			out, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx",
+				"{.status.clusterMetricsNamespace}/{.status.clusterMetricsNamePrefix}")
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "60s", "5s").Should(Equal(overrideNS+"/"+overridePrefix),
+			"the placement must be recorded and pinned on the status")
+
+		By("disabling the feature and expecting the override placement honored on cleanup")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p",
+			`[{"op":"remove","path":"/spec/clusterMetrics"},{"op":"remove","path":"/spec/api"}]`)
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func(g Gomega) bool {
+			_, depErr := runKubectl(overrideNS, "get",
+				"deployment/"+overridePrefix+"-kube-state-metrics")
+			g.Expect(depErr).To(HaveOccurred(), "the override-placed KSM deployment must be deleted on disable")
+			_, roleErr := runKubectl("", "get", "clusterrole/"+rbacName)
+			g.Expect(roleErr).To(HaveOccurred(), "the override-named ClusterRole must be deleted on disable")
+			return true
+		}, "90s", "5s").Should(BeTrue())
+
+		Eventually(func(g Gomega) string {
+			out, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx", "{.metadata.finalizers}")
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "60s", "5s").ShouldNot(ContainSubstring("cluster-metrics-cleanup"),
+			"disabling the feature must release the cleanup finalizer")
+		assertCondition("Ready")
+	})
 })
