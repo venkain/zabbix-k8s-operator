@@ -253,6 +253,36 @@ and third-party tutorials are never normative and are not cited here.
 
 ## Decision log
 
+- 2026-11-12: Telemetry & APM slices 1+2 shipped (`spec.telemetryStorage`
+  + `spec.apm`, merged to main). Design choices:
+  - **Official env contract only**: `ZBX_HISTORYPROVIDER_0` /
+    `ZBX_TELEMETRYPROVIDER_0` JSON providers, `_SCHEMA={"create":true}`
+    auto-create, `_USERNAME_FILE`/`_PASSWORD_FILE` (credentials delivered
+    through Secret-mounted files, never plain env values) — verified
+    against zabbix-docker 8.0 entrypoint sources and the Docker Hub env
+    docs, no conf-file templating.
+  - **Managed vs external**: `managed` deploys a single-node
+    clickhouse/clickhouse-server:26.8 StatefulSet + PVC + Service in the
+    resource's namespace with an operator-generated get-or-create auth
+    Secret (password never rotates behind the database; mode switch /
+    disable deletes the backend objects). External mode takes a user
+    Secret. Zabbix supports one ClickHouse URL, so HA clusters need a
+    customer LB — external mode is the production path, managed mode is
+    the zero-touch path. Version range per Zabbix 8.0 requirements:
+    26.3–26.9 (telemetry source needs ≥ 26.8.17.4); default tag 26.8.
+  - **Proxy constraints honored**: proxies get the telemetry provider
+    only (ClickHouse is not a proxy history backend); APM rides proxy
+    groups (only the proxy accepts OTLP in 8.0) behind
+    `spec.apm` with a converged `<pg>-proxy-apm` OTLP/gRPC Service
+    (removed again on disable). Everything version-gated ≥ 8.0 via a
+    `majorVersion()` helper.
+  - **Namespace boundary**: the managed auth Secret lives in the Zabbix
+    resource's namespace; cross-namespace proxy groups need external
+    mode (documented).
+  - **e2e flake fix**: `kubectl rollout status` fails instantly on a
+    missing resource (verified), so specs must await an operator-created
+    object's existence before rollout-statusing it — the placement-
+    override spec had a ~60ms race.
 - 2026-11-12: OQ6 reviewed against the official 8.0 what's-new/upgrade
   notes: no code changes required for 8.0 deploys today (version
   pattern + official tags already cover it); recorded the breaking

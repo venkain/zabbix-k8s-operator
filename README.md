@@ -19,6 +19,9 @@ Declarative, level-triggered management of a complete Zabbix deployment:
 - **Proxy group** (multi-replica StatefulSet with per-pod DNS)
 - **Database**: CloudNativePG cluster (HA, backups, version upgrades) or an
   external database supplied via a Kubernetes Secret
+- **Telemetry**: ClickHouse history/telemetry storage (managed single-node
+  backend or external endpoint) + OpenTelemetry (APM) collection on proxy
+  groups (Zabbix 8.0+)
 - Status conditions, events, and drift repair for everything it owns
 
 Design follows the Kubernetes operator pattern throughout: desired state is
@@ -136,6 +139,85 @@ in `unsupported` state for a few minutes — the template's
 warm up and clears itself; `kube.namespace.cpu_usage[*]` needs a few
 minutes of history for its `last()` expressions.
 
+## Telemetry storage (ClickHouse) & APM
+
+Zabbix 8.0 can store item history in ClickHouse and ingest OpenTelemetry
+(APM) traces/metrics/logs through its proxies. The operator wires the
+official image entrypoints (`ZBX_HISTORYPROVIDER_0`,
+`ZBX_TELEMETRYPROVIDER_0`, `ZBX_STARTAPMCOLLECTOR`, … — no config-file
+templating); everything is version-gated and silently ignored on Zabbix
+< 8.0. ClickHouse must be **26.3–26.9** per the Zabbix 8.0 requirements
+(telemetry query items additionally require ≥ 26.8.17.4).
+
+**Managed backend (simplest).** Set `spec.telemetryStorage.clickhouse.managed`
+and the operator deploys a single-node `clickhouse/clickhouse-server:26.8`
+StatefulSet with a PVC (`storage`, default 10Gi), fronts it with a
+`<name>-clickhouse` Service, generates the `zabbix` login's password into an
+operator-owned Secret (`<name>-clickhouse-auth`, created once — the password
+never rotates behind the database), and wires server + frontend to
+`http://<name>-clickhouse.<ns>.svc:8123` with credentials delivered through
+Secret-backed `_FILE` environment variables. On startup the Zabbix
+entrypoint creates the history tables in ClickHouse (`_SCHEMA={"create":true}`
+default; set `createSchema: false` for a migrated database):
+
+```yaml
+spec:
+  telemetryStorage:
+    clickhouse:
+      managed:
+        storage: 50Gi             # PVC size
+        # storageClassName: fast-ssd
+        # resources: {}
+        # image: {repository: ..., tag: 26.9.5}
+      database: zabbix            # default
+      # valueTypes: [uint, dbl]   # default: all supported types
+```
+
+**External endpoint.** Point at an existing ClickHouse instead:
+
+```yaml
+spec:
+  telemetryStorage:
+    clickhouse:
+      endpoint: http://clickhouse.monitoring.svc:8123   # single URL only
+      credentialsSecretRef:
+        secretName: clickhouse-creds   # keys username/password (configurable)
+      # tls:
+      #   secretName: clickhouse-tls   # keys ca.crt / tls.crt / tls.key
+```
+
+Disable (remove `spec.telemetryStorage`) or switch modes and the operator
+deletes the managed backend objects it created.
+
+**What lands where.** History reads/writes and the APM menu's telemetry
+data source are wired on the server and frontend; proxies receive the
+telemetry provider only — ClickHouse is **not** a proxy history backend
+(SQL only). Zabbix supports a single ClickHouse URL, so HA ClickHouse
+clusters need a load balancer in front (that is what the external mode is
+for; the managed mode is deliberately single-node).
+
+**APM on proxy groups.** Set `spec.apm` on a `ZabbixProxyGroup` (Zabbix
+8.0+; only the proxy accepts OTLP) and every member runs the OTLP/gRPC
+collector; applications export to the group's `<pgname>-proxy-apm`
+ClusterIP Service:
+
+```yaml
+kind: ZabbixProxyGroup
+spec:
+  apm:
+    listenPort: 4317           # default
+    # tlsSecretRef:
+    #   secretName: apm-tls    # listener TLS (ca.crt / tls.crt / tls.key)
+```
+
+APM data flows to the telemetry provider of the referenced `serverRef`
+Zabbix resource — with the managed backend that is the same namespace's
+ClickHouse; a proxy group in a *different* namespace needs the external
+endpoint mode (the auth Secret is not visible across namespaces).
+
+**Status.** The managed backend reports through the
+`TelemetryStorageReady` condition on the Zabbix resource.
+
 ## Testing
 
 **Unit/integration:** `make test` — envtest-backed controller tests
@@ -226,6 +308,10 @@ For development and iteration, deploy from source with
 - [x] **Phase 5 — cluster metrics & distribution**: automated cluster
   monitoring via `spec.clusterMetrics` (host registration, disable
   path, placement overrides), Helm chart, v0.2.0 release
+- [x] **Phase 6 — telemetry & APM**: ClickHouse history/telemetry
+  storage (managed single-node backend + external endpoint) and OTLP
+  (APM) collection on proxy groups via `spec.telemetryStorage` /
+  `spec.apm`
 
 ## Documentation
 

@@ -45,12 +45,19 @@ spec:
   # storage (ClickHouse).
   # telemetryStorage:
   #   clickhouse:
-  #     endpoint: http://clickhouse.monitoring.svc:8123
-  #     database: zabbix            # default: zabbix
-  #     credentialsSecretRef:
-  #       secretName: clickhouse-creds
-  #       # usernameKey: username   # default: username
-  #       # passwordKey: password   # default: password
+  #     # Managed mode: the operator deploys a single-node ClickHouse
+  #     # (StatefulSet + PVC + Service) and generates its credentials.
+  #     managed:
+  #       storage: 50Gi             # default: 10Gi
+  #       # storageClassName: fast-ssd
+  #       # resources: {}
+  #     # External mode instead: point at an existing ClickHouse.
+  #     # endpoint: http://clickhouse.monitoring.svc:8123
+  #     # database: zabbix          # default: zabbix
+  #     # credentialsSecretRef:
+  #     #   secretName: clickhouse-creds
+  #     #   # usernameKey: username # default: username
+  #     #   # passwordKey: password # default: password
   #     # valueTypes: [uint, dbl, str, log, text, json]   # default: all
   #     # createSchema: true       # default: entrypoint creates tables
   #     # tls:

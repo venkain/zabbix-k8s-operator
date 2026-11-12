@@ -65,6 +65,9 @@ const (
 	// (kube-state-metrics endpoint + monitor service account).
 	ComponentClusterMetrics = "cluster-metrics"
 
+	// ComponentClickHouse marks the managed ClickHouse backend objects.
+	ComponentClickHouse = "clickhouse"
+
 	// Container ports (official images).
 	ServerPort   = int32(10051)
 	FrontendPort = int32(8080) // nginx in the official image listens on 8080
@@ -84,6 +87,7 @@ const (
 	resourceSuffixFrontend   = "-frontend"
 	resourceSuffixWebService = "-web-service"
 	resourceSuffixProxy      = "-proxy"
+	resourceSuffixClickHouse = "-clickhouse"
 )
 
 // managedProxyRecordPattern matches the server-side proxy records the
@@ -113,6 +117,11 @@ func WebServiceName(instance string) string { return instance + resourceSuffixWe
 // serviceName). The pod names double as the Zabbix proxy identities: each
 // group member registers with the server under <instance>-proxy-<ordinal>.
 func ProxyName(instance string) string { return instance + resourceSuffixProxy }
+
+// ClickHouseName returns the name for the managed ClickHouse backend's
+// derived objects (StatefulSet, Service). The auth Secret carries an
+// extra "-auth" suffix on top of it.
+func ClickHouseName(instance string) string { return instance + resourceSuffixClickHouse }
 
 // ImageFor returns the official container image for a component,
 // honoring user overrides. Tag derivation from spec.version:

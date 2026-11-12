@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -318,15 +319,29 @@ type TelemetryStorageSpec struct {
 	ClickHouse ClickHouseSpec `json:"clickhouse"`
 }
 
-// ClickHouseSpec selects one ClickHouse endpoint. A single URL is
-// supported by Zabbix (multi-node clusters need a load balancer in
-// front); see the official ClickHouse setup guide.
+// ClickHouseSpec selects one ClickHouse endpoint, either operator-managed
+// (spec.telemetryStorage.clickhouse.managed) or external. In external mode
+// a single URL is supported by Zabbix (multi-node clusters need a load
+// balancer in front); see the official ClickHouse setup guide.
+// +kubebuilder:validation:XValidation:message="endpoint is required unless managed mode is enabled (the managed endpoint is derived)",rule="has(self.managed) || has(self.endpoint)"
+// +kubebuilder:validation:XValidation:message="credentialsSecretRef is required unless managed mode is enabled (the managed credentials are operator-generated)",rule="has(self.managed) || has(self.credentialsSecretRef)"
 type ClickHouseSpec struct {
 	// endpoint is the ClickHouse HTTP interface URL (port 8123), e.g.
-	// "http://clickhouse.monitoring.svc:8123".
+	// "http://clickhouse.monitoring.svc:8123". Required unless managed
+	// mode is enabled (the managed endpoint is derived from the managed
+	// StatefulSet's Service).
 	// +kubebuilder:validation:Pattern=`^https?://[a-zA-Z0-9.\-_:]+[0-9]*$`
-	// +required
-	Endpoint string `json:"endpoint"`
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// managed, when set, has the operator deploy a single-node
+	// ClickHouse (StatefulSet + PVC + Service) in the Zabbix resource's
+	// namespace, generate its credentials into an operator-owned Secret
+	// and wire the Zabbix stack to it. Simplest setup; for production
+	// history volumes prefer a managed external cluster behind a load
+	// balancer.
+	// +optional
+	Managed *ClickHouseManagedSpec `json:"managed,omitempty"`
 
 	// database is the ClickHouse database holding the zabbix tables
 	// (history_uint, history, ...). Defaults to "zabbix".
@@ -335,9 +350,10 @@ type ClickHouseSpec struct {
 
 	// credentialsSecretRef names a Secret carrying the ClickHouse
 	// username and password. The operator mounts it read-only and points
-	// the image entrypoints at the files.
-	// +required
-	CredentialsSecretRef ClickHouseCredentials `json:"credentialsSecretRef"`
+	// the image entrypoints at the files. Required unless managed mode
+	// is enabled (the managed credentials are operator-generated).
+	// +optional
+	CredentialsSecretRef ClickHouseCredentials `json:"credentialsSecretRef,omitempty"`
 
 	// valueTypes routes only these item value types to ClickHouse
 	// (uint, dbl, str, log, text, json). Empty routes all supported
@@ -354,9 +370,34 @@ type ClickHouseSpec struct {
 	CreateSchema *bool `json:"createSchema,omitempty"`
 
 	// tls optionally secures the ClickHouse connection with CA / client
-	// certificate material from a Secret.
+	// certificate material from a Secret. External endpoints only: the
+	// operator-managed single node is not TLS-terminated.
 	// +optional
 	TLS *ClickHouseTLS `json:"tls,omitempty"`
+}
+
+// ClickHouseManagedSpec configures the operator-managed single-node
+// ClickHouse deployment.
+type ClickHouseManagedSpec struct {
+	// storage size of the ClickHouse data PersistentVolumeClaim.
+	// +kubebuilder:default="10Gi"
+	// +optional
+	Storage resource.Quantity `json:"storage,omitempty"`
+
+	// storageClassName for the data PersistentVolumeClaim. Empty uses
+	// the cluster default storage class.
+	// +optional
+	StorageClassName string `json:"storageClassName,omitempty"`
+
+	// resources for the ClickHouse server container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// image overrides the ClickHouse server image. The default is the
+	// official clickhouse/clickhouse-server image at a version inside
+	// the range the Zabbix 8.0 requirements list (26.3–26.9).
+	// +optional
+	Image *ImageSpec `json:"image,omitempty"`
 }
 
 // ClickHouseCredentials points at the keys of an existing Secret.
@@ -456,6 +497,11 @@ const (
 	// ingestion (kube-state-metrics endpoint + Zabbix cluster host) is
 	// deployed and registered with the server.
 	ConditionClusterMetricsReady ComponentConditionType = "ClusterMetricsReady"
+
+	// ConditionTelemetryStorageReady indicates the managed ClickHouse
+	// backend (spec.telemetryStorage.clickhouse.managed) is deployed
+	// and its pod is healthy.
+	ConditionTelemetryStorageReady ComponentConditionType = "TelemetryStorageReady"
 )
 
 // ZabbixStatus defines the observed state of Zabbix.
