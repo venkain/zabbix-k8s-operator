@@ -171,7 +171,7 @@ Install the operator (CRDs, RBAC, manager) from the committed bundle:
 
 ```sh
 kubectl apply -f \
-  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.1.0/dist/install.yaml
+  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.2.0/dist/install.yaml
 ```
 
 Or from the Helm chart (`dist/chart`; image defaults to the released
@@ -202,7 +202,7 @@ spec:
     size: 20Gi
 EOF
 kubectl -n monitoring apply -f \
-  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.1.0/config/samples/zabbix_v1alpha1_zabbix.yaml
+  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.2.0/config/samples/zabbix_v1alpha1_zabbix.yaml
 kubectl -n monitoring get zabbix --watch
 ```
 
@@ -223,6 +223,9 @@ For development and iteration, deploy from source with
   - [x] Docs: README-first — this repo renders on GitHub, so the
     README + [docs/requirements.md](docs/requirements.md) are the
     documentation; no separate docs-site build to maintain
+- [x] **Phase 5 — cluster metrics & distribution**: automated cluster
+  monitoring via `spec.clusterMetrics` (host registration, disable
+  path, placement overrides), Helm chart, v0.2.0 release
 
 ## Documentation
 
