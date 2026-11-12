@@ -169,8 +169,97 @@ and third-party tutorials are never normative and are not cited here.
     - deferred: regenerate `dist/install.yaml` (CRD changed) with the
       NEXT release tag — regenerating now would embed a dev image tag
       in the committed bundle.
+- OQ6: Zabbix 8.0 support — what changes for the operator? — **reviewed
+  2026-11-12, plan below**. Source: the official
+  [What's new and upgrade notes: 8.0](https://www.zabbix.com/documentation/8.0/en/manual/whatsnew)
+  (8.0.0 released 2026-11-05; the next minor, 8.2, is in devel — planned
+  Sept 2027 — so 8.0 LTS is the only target for the foreseeable future).
+  The operator's `spec.version` already accepts `8.0` (pattern
+  `^[0-9]+\.[0-9]+$`) and the official container tags exist, so 8.0
+  deploys work today; the review is about deltas that need operator
+  code, docs, or user guidance.
+
+  **Breaking changes that hit operator users (docs/upgrade guidance):**
+  - Minimum DB versions raised — PostgreSQL 13 → **15**, MySQL 8.0.30 →
+    8.4, MariaDB 10.5 → 10.11, Elasticsearch 7 → **8** (server refuses
+    to start on older ES; `AllowUnsupportedDBVersions` cannot override
+    the ES check). CNPG users: pin a CNPG image ≥ PG 15 (current CNPG
+    defaults are ≥16, fine). Elasticsearch <8 anywhere is a hard stop.
+  - Minimum PHP 8.2 (frontend) — irrelevant for official images.
+  - **History storage provider rework**: `HistoryStorageURL/Types/
+    DateIndex` are deprecated in favor of a single `HistoryProvider`;
+    frontend `$HISTORY` → `$HISTORY_PROVIDERS`; ClickHouse joins
+    Elasticsearch as a history/telemetry backend. Cannot mix old+new
+    params. Operator angle: if/when history-backend passthrough is
+    added (server config or env), it must emit the NEW param names for
+    8.0+ and the OLD ones for 7.x — a version-gated config builder.
+  - **API access now disabled by default for new user roles** (all
+    roles on fresh installs; only new roles on upgraded ones), and an
+    empty API allow-list now denies everything. Directly affects
+    `spec.clusterMetrics` token provisioning: a user who creates a
+    fresh dedicated role for the monitor token on 8.0 gets
+    `ClusterHostRegistrationFailed` unless API access is explicitly
+    enabled for that role. Document in the clusterMetrics README
+    section (and consider surfacing the API error text in the
+    condition message).
+  - HTTP-based templates and webhook media types now verify TLS by
+    default (`{$HTTP.TLS.VERIFY}`, default `full`). The Kubernetes
+    Cluster template users still need the CA trusted in the server
+    container or `none` — OQ5 lab findings already documented this.
+  - Deprecated Kubernetes templates officially replaced by
+    "Kubernetes Cluster by HTTP" — operator story unchanged (we link
+    the new template already).
+
+  **New features mapped against current operator support:**
+  - APM / OpenTelemetry (traces/metrics/logs via OTLP; proxy gets an
+    APM collector with gRPC listener + TLS params; server gains
+    `TelemetryProvider`, `StartTelemetryQueryPollers`; telemetry data
+    lives in ClickHouse) — NOT supported by the operator yet. Plan:
+    second wave, gated on demand. Needs (a) passthrough for the new
+    server params (OQ3 policy: only when demonstrated), (b) proxy APM
+    support: APM-enabled proxy image + Service exposing the OTLP
+    listener port + TLS cert wiring, (c) optionally a managed
+    ClickHouse if users want in-cluster telemetry storage (big scope —
+    likely never managed; external endpoint passthrough instead).
+  - CEP (complex event processing) — API-surface feature
+    (`ceprule.*`); the operator manages infrastructure, not rules. No
+    work.
+  - Multiple PostgreSQL hosts in `DBHost` (comma list, connection
+    failover) — CNPG already gives failover via the `-rw` Service; for
+    `database.external`, a future nicety would be accepting a host
+    list. Low priority.
+  - Mobile app / bridge adapter (`BridgeAdapterURL`,
+    `EnableMobileDevices`), MCP server, dark theme, dashboards,
+    widgets, SAML cert import, vault AppRole, DNS caching (c-ares) —
+    all inside official images or API/frontend; covered by existing
+    `env` escape hatches or nothing to do.
+  - New templates (AWS/Azure/GCP additions, MariaDB/Percona, OTLP
+    templates, Podman, Hyper-V) — content-level; no operator work.
+
+  **Operator support plan (ordered):**
+  1. Docs (no code): README "Upgrading the stack to 8.0" notes — DB
+     minimums (PG 15+), API-role default-off for clusterMetrics
+     tokens, history-provider param migration pointer.
+  2. Version-gated server config builder IF history-backend or
+     telemetry passthrough is added (OQ3 gate; not speculative).
+  3. APM slice (separate OQ when asked for): proxy APM image flag +
+     OTLP Service + TLS; server `TelemetryProvider`/
+     `StartTelemetryQueryPollers` passthrough; ClickHouse as external
+     data source.
+  4. `database.external` host-list support (nice-to-have).
+  5. 8.2 tracking note: it is in devel until ~Sept 2027; revisit the
+     8.2 what's-new page (NetFlow, topology, log management, AI tools
+     per early research) when it nears release.
 
 ## Decision log
+
+- 2026-11-12: OQ6 reviewed against the official 8.0 what's-new/upgrade
+  notes: no code changes required for 8.0 deploys today (version
+  pattern + official tags already cover it); recorded the breaking
+  changes that hit operator users (PG 15+ minimum, API-role
+  default-off affecting clusterMetrics tokens, history-provider param
+  rework) and a demand-gated plan for APM/OTLP + history-backend
+  passthrough. Docs-only upgrade notes approved as the first slice.
 
 - 2026-11-06: D1–D5 accepted; scope matrix drafted. Phase 0 research
   (deployment-tooling analysis and hands-on validation evidence) completed
