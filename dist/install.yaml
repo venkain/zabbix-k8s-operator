@@ -105,6 +105,147 @@ spec:
                 required:
                 - tokenSecretRef
                 type: object
+              clusterMetrics:
+                description: |-
+                  clusterMetrics turns on ingestion of Kubernetes cluster metrics
+                  into this Zabbix instance (kube-state-metrics endpoint + "Kubernetes
+                  Cluster by HTTP" template host). Optional; off by default.
+                properties:
+                  clusterName:
+                    description: |-
+                      clusterName is the Zabbix host name for the monitored Kubernetes
+                      cluster (one host per cluster). The operator creates or adopts a
+                      host with this name.
+                    type: string
+                  kubeStateMetrics:
+                    description: |-
+                      kubeStateMetrics, when set, has the operator deploy and manage a
+                      kube-state-metrics workload (Deployment + Service) in the
+                      placement namespace. The Service is named <namePrefix>-kube-state-metrics
+                      so the template's endpoint discovery regex matches it. When unset,
+                      the template discovers an existing kube-state-metrics whose
+                      Endpoints name ends in "kube-state-metrics" and whose port is
+                      named "http"/"https".
+                    properties:
+                      image:
+                        description: |-
+                          image overrides the kube-state-metrics image. The default is the
+                          lab-verified registry.k8s.io/kube-state-metrics/kube-state-metrics
+                          image at a fixed version.
+                        properties:
+                          pullPolicy:
+                            description: pullPolicy is the image pull policy.
+                            enum:
+                            - Always
+                            - IfNotPresent
+                            - Never
+                            type: string
+                          repository:
+                            description: repository replaces the default image repository.
+                            type: string
+                          tag:
+                            description: tag replaces the tag derived from spec.version.
+                            type: string
+                        type: object
+                      resources:
+                        description: resources for the kube-state-metrics container.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This field depends on the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                                request:
+                                  description: |-
+                                    Request is the name chosen for a request in the referenced claim.
+                                    If empty, everything from the claim is made available, otherwise
+                                    only the result of this request.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
+                    type: object
+                  namePrefix:
+                    description: |-
+                      namePrefix overrides the prefix of the derived cluster-metrics
+                      object names: <namePrefix>-kube-state-metrics (Deployment,
+                      Service, ServiceAccount), <namePrefix>-kube-monitor (monitor
+                      ServiceAccount) and <namePrefix>-kube-monitor-token (token
+                      Secret). The suffixes stay fixed — the template's kube-state-metrics
+                      discovery regex matches names ENDING in "kube-state-metrics".
+                      The default prefix is the Zabbix resource's name. A change of
+                      placement while the feature is enabled is ignored: placement is
+                      recorded in the status at enablement and honored until the
+                      feature is disabled and re-enabled.
+                    maxLength: 40
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  namespace:
+                    description: |-
+                      namespace overrides where the derived cluster-metrics objects
+                      (managed kube-state-metrics workload, monitor identity, token
+                      Secret) are deployed. The namespace must already exist. The
+                      default is the Zabbix resource's own namespace.
+                    maxLength: 63
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  tlsVerify:
+                    default: none
+                    description: |-
+                      tlsVerify sets the {$HTTP.TLS.VERIFY} macro on the host. "full"
+                      requires the Zabbix server container to trust the Kubernetes API
+                      server CA; "none" skips certificate verification. The default is
+                      "none" (works out of the box; switch to "full" after mounting the
+                      cluster CA into the server).
+                    enum:
+                    - full
+                    - none
+                    type: string
+                required:
+                - clusterName
+                type: object
               database:
                 description: database selects the PostgreSQL database backing this
                   deployment.
@@ -636,9 +777,33 @@ spec:
                 mode needs the Zabbix API for active-node routing'
               rule: '!(has(self.server) && has(self.server.replicas) && self.server.replicas
                 > 1) || (has(self.api) && has(self.api.tokenSecretRef))'
+            - message: 'clusterMetrics requires spec.api (api.tokenSecretRef): the
+                cluster host is managed through the Zabbix API'
+              rule: '!has(self.clusterMetrics) || (has(self.api) && has(self.api.tokenSecretRef))'
           status:
             description: status defines the observed state of Zabbix
             properties:
+              clusterMetricsHostName:
+                description: |-
+                  clusterMetricsHostName records the Zabbix host name registered by
+                  the cluster-metrics feature. It is kept on the status so the
+                  disable path can still address the host after the feature flag
+                  (and with it the spec field) is removed.
+                type: string
+              clusterMetricsNamePrefix:
+                description: |-
+                  clusterMetricsNamePrefix records the name prefix the
+                  cluster-metrics objects were created with (spec override or the
+                  resource's name at enablement). The disable and deletion paths
+                  address the objects through it after the spec field is gone.
+                type: string
+              clusterMetricsNamespace:
+                description: |-
+                  clusterMetricsNamespace records the namespace the cluster-metrics
+                  objects were deployed into (spec override or the resource's own
+                  namespace at enablement). The disable and deletion paths address
+                  the objects through it after the spec field is gone.
+                type: string
               conditions:
                 description: |-
                   conditions represent the current state of the Zabbix resource.
@@ -1099,6 +1264,26 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - endpoints
+  - namespaces
+  - nodes
+  - persistentvolumeclaims
+  - persistentvolumes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes/proxy
+  - services/proxy
+  verbs:
+  - create
+  - get
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
   - delete
@@ -1110,13 +1295,7 @@ rules:
   - ""
   resources:
   - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
+  - serviceaccounts
   - services
   verbs:
   - create
@@ -1125,6 +1304,15 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  - replicasets
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - apps
@@ -1140,11 +1328,41 @@ rules:
   - update
   - watch
 - apiGroups:
+  - autoscaling
+  resources:
+  - horizontalpodautoscalers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - cronjobs
+  - jobs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - policy
   resources:
   - poddisruptionbudgets
   verbs:
   - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - create
+  - delete
   - get
   - list
   - patch
@@ -1445,7 +1663,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: ghcr.io/venkain/zabbix-k8s-operator:v0.1.0
+        image: controller:latest
         livenessProbe:
           httpGet:
             path: /healthz
