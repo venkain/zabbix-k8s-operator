@@ -296,6 +296,107 @@ type ZabbixSpec struct {
 	// Cluster by HTTP" template host). Optional; off by default.
 	// +optional
 	ClusterMetrics *ClusterMetricsSpec `json:"clusterMetrics,omitempty"`
+
+	// telemetryStorage routes item history and APM telemetry through
+	// ClickHouse instead of the SQL database (Zabbix 8.0+; ignored on
+	// older versions). Optional; off by default.
+	// +optional
+	TelemetryStorage *TelemetryStorageSpec `json:"telemetryStorage,omitempty"`
+}
+
+// TelemetryStorageSpec configures ClickHouse as the history storage
+// provider and telemetry data source. The operator wires the official
+// image entrypoints (ZBX_HISTORYPROVIDER_<N> / ZBX_TELEMETRYPROVIDER_<N>,
+// verified against zabbix-docker 8.0); credentials are delivered through
+// Secret-backed files, never as plain env values.
+type TelemetryStorageSpec struct {
+	// clickhouse is the ClickHouse endpoint configuration. History is
+	// routed server- and frontend-side; the telemetry provider is wired
+	// to the server (telemetry query items), the frontend (APM menu) and
+	// every operator-managed proxy group (APM collector output).
+	// +required
+	ClickHouse ClickHouseSpec `json:"clickhouse"`
+}
+
+// ClickHouseSpec selects one ClickHouse endpoint. A single URL is
+// supported by Zabbix (multi-node clusters need a load balancer in
+// front); see the official ClickHouse setup guide.
+type ClickHouseSpec struct {
+	// endpoint is the ClickHouse HTTP interface URL (port 8123), e.g.
+	// "http://clickhouse.monitoring.svc:8123".
+	// +kubebuilder:validation:Pattern=`^https?://[a-zA-Z0-9.\-_:]+[0-9]*$`
+	// +required
+	Endpoint string `json:"endpoint"`
+
+	// database is the ClickHouse database holding the zabbix tables
+	// (history_uint, history, ...). Defaults to "zabbix".
+	// +optional
+	Database string `json:"database,omitempty"`
+
+	// credentialsSecretRef names a Secret carrying the ClickHouse
+	// username and password. The operator mounts it read-only and points
+	// the image entrypoints at the files.
+	// +required
+	CredentialsSecretRef ClickHouseCredentials `json:"credentialsSecretRef"`
+
+	// valueTypes routes only these item value types to ClickHouse
+	// (uint, dbl, str, log, text, json). Empty routes all supported
+	// types.
+	// +kubebuilder:validation:items:Pattern=`^(uint|dbl|str|log|text|json)$`
+	// +optional
+	ValueTypes []string `json:"valueTypes,omitempty"`
+
+	// createSchema lets the image entrypoint create the history tables
+	// on startup (official _SCHEMA={"create":true} behavior). Set false
+	// when the schema was imported manually (e.g. migrated from an SQL
+	// database). Defaults to true.
+	// +optional
+	CreateSchema *bool `json:"createSchema,omitempty"`
+
+	// tls optionally secures the ClickHouse connection with CA / client
+	// certificate material from a Secret.
+	// +optional
+	TLS *ClickHouseTLS `json:"tls,omitempty"`
+}
+
+// ClickHouseCredentials points at the keys of an existing Secret.
+type ClickHouseCredentials struct {
+	// secretName is the Secret name.
+	// +required
+	SecretName string `json:"secretName"`
+
+	// usernameKey is the Secret key holding the username. Defaults to
+	// "username".
+	// +optional
+	UsernameKey string `json:"usernameKey,omitempty"`
+
+	// passwordKey is the Secret key holding the password. Defaults to
+	// "password".
+	// +optional
+	PasswordKey string `json:"passwordKey,omitempty"`
+}
+
+// ClickHouseTLS references CA / client certificate / private key inside
+// one Secret for the ClickHouse connection.
+type ClickHouseTLS struct {
+	// secretName is the Secret carrying the TLS material.
+	// +required
+	SecretName string `json:"secretName"`
+
+	// caKey is the Secret key holding the CA certificate. Defaults to
+	// "ca.crt". Omit (empty) to skip CA verification.
+	// +optional
+	CAKey string `json:"caKey,omitempty"`
+
+	// certKey is the Secret key holding the client certificate.
+	// Defaults to "tls.crt".
+	// +optional
+	CertKey string `json:"certKey,omitempty"`
+
+	// keyKey is the Secret key holding the client private key. Defaults
+	// to "tls.key".
+	// +optional
+	KeyKey string `json:"keyKey,omitempty"`
 }
 
 // HANodeStatus is the observed state of one Zabbix server HA node.

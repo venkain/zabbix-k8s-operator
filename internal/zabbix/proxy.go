@@ -107,6 +107,9 @@ func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *za
 			{Name: "ZBX_HOSTNAME", ValueFrom: fieldRef("metadata.name")},
 			// Separate embedded SQLite database per member.
 			{Name: envNodeNameDB, Value: "true"},
+			// ClickHouse telemetry provider wiring (APM output must land
+			// in the same backend the server reads from; Zabbix 8.0+,
+			// no-op otherwise). See telemetry.go for the contract.
 		},
 		Ports: []corev1.ContainerPort{
 			{Name: portNameProxyTrapper, ContainerPort: ProxyPort},
@@ -115,6 +118,16 @@ func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *za
 		LivenessProbe:  proxyLivenessProbe(),
 		Resources:      pg.Spec.Resources,
 	}
+	// Telemetry wiring is appended after the literal so the base env
+	// stays readable; both helpers are no-ops when disabled or on
+	// pre-8.0 versions.
+	proxyContainer.Env = append(proxyContainer.Env, ProxyTelemetryEnvs(pg, z)...)
+	proxyContainer.Env = append(proxyContainer.Env, ProxyAPMEnvs(pg)...)
+	if apm := APMListenPortIfEnabled(pg); apm > 0 {
+		proxyContainer.Ports = append(proxyContainer.Ports,
+			corev1.ContainerPort{Name: otlpPortName, ContainerPort: apm})
+	}
+	proxyContainer.VolumeMounts = append(TelemetryVolumeMounts(z), APMVolumeMounts(pg)...)
 
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -130,6 +143,7 @@ func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *za
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{proxyContainer},
+					Volumes:    append(TelemetrySecretVolumes(z), APMSecretVolumes(pg)...),
 				},
 			},
 		},

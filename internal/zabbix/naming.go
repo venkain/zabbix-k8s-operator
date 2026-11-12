@@ -21,6 +21,7 @@ limitations under the License.
 package zabbix
 
 import (
+	"fmt"
 	"regexp"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -144,6 +145,17 @@ func isPointRelease(version string) bool {
 		}
 	}
 	return dots > 1
+}
+
+// majorVersion returns the leading major release number of a version
+// string ("8.0" → 8). Versions carry the CRD pattern `^[0-9]+\.[0-9]+$`,
+// so the parse only fails for shapes that validation already rejects.
+func majorVersion(version string) (int, bool) {
+	var major int
+	if _, err := fmt.Sscanf(version, "%d.", &major); err != nil {
+		return 0, false
+	}
+	return major, true
 }
 
 // commonLabels returns the label set shared by all objects of an instance.

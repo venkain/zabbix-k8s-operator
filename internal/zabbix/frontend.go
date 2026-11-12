@@ -45,6 +45,9 @@ func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deplo
 	if spec != nil {
 		env = append(env, spec.Env...)
 	}
+	// ClickHouse history/telemetry wiring for the frontend (Zabbix 8.0+;
+	// no-op when unset or on older versions). See telemetry.go.
+	env = append(env, FrontendTelemetryEnvs(z)...)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -69,7 +72,9 @@ func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deplo
 						ReadinessProbe: httpProbe("/"),
 						LivenessProbe:  httpProbe("/"),
 						Resources:      frontendResources(spec),
+						VolumeMounts:   TelemetryVolumeMounts(z),
 					}},
+					Volumes: TelemetrySecretVolumes(z),
 				},
 			},
 		},

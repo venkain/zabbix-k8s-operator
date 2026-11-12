@@ -38,3 +38,20 @@ spec:
   #     image:
   #       tag: v2.9.2
   #     resources: {}
+  # Optional (Zabbix 8.0+): store item history and APM telemetry in
+  # ClickHouse instead of the SQL database. The operator wires the
+  # official image entrypoints on the server and frontend; credentials
+  # are delivered through Secret-backed files. See README → Telemetry
+  # storage (ClickHouse).
+  # telemetryStorage:
+  #   clickhouse:
+  #     endpoint: http://clickhouse.monitoring.svc:8123
+  #     database: zabbix            # default: zabbix
+  #     credentialsSecretRef:
+  #       secretName: clickhouse-creds
+  #       # usernameKey: username   # default: username
+  #       # passwordKey: password   # default: password
+  #     # valueTypes: [uint, dbl, str, log, text, json]   # default: all
+  #     # createSchema: true       # default: entrypoint creates tables
+  #     # tls:
+  #     #   secretName: clickhouse-tls

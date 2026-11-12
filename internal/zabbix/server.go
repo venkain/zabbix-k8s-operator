@@ -83,6 +83,9 @@ func serverStatefulSet(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv, replicas int32
 	if haIdentity {
 		env = append(env, serverHAEnv()...)
 	}
+	// ClickHouse history/telemetry wiring (Zabbix 8.0+; no-op when unset
+	// or on older versions). See telemetry.go for the entrypoint contract.
+	env = append(env, ServerTelemetryEnvs(z)...)
 
 	serverContainer := corev1.Container{
 		Name:            serverContainerName,
@@ -95,6 +98,7 @@ func serverStatefulSet(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv, replicas int32
 		ReadinessProbe: serverReadyProbe(),
 		LivenessProbe:  serverLivenessProbe(),
 		Resources:      spec.Resources,
+		VolumeMounts:   TelemetryVolumeMounts(z),
 		// The server entrypoint prepares the database schema and node
 		// identity on startup; give it room to finish cleanly.
 		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
@@ -128,6 +132,7 @@ func serverStatefulSet(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv, replicas int32
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
 					Containers: containers,
+					Volumes:    TelemetrySecretVolumes(z),
 				},
 			},
 		},

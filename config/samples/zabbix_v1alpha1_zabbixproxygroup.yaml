@@ -16,3 +16,11 @@ spec:
   # Optional group tuning; empty values use the server defaults.
   # failoverDelay: 1m
   # minOnline: 1
+  # Optional (Zabbix 8.0+): run the OpenTelemetry (APM) collector on
+  # every member; applications submit OTLP/gRPC to the group's
+  # <name>-proxy-apm Service. Data lands in the telemetry provider
+  # (ClickHouse) configured on the referenced Zabbix resource.
+  # apm:
+  #   listenPort: 4317             # default: 4317 (OTLP/gRPC)
+  #   tlsSecretRef:
+  #     secretName: apm-tls
