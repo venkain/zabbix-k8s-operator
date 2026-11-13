@@ -392,6 +392,54 @@ var _ = Describe("Zabbix Controller", func() {
 			Expect(final.Status.ClusterMetricsNamespace).To(BeEmpty())
 			Expect(final.Status.ClusterMetricsNamePrefix).To(BeEmpty())
 		})
+
+		It("clears a stale placement record left behind by a lost disable status write", func() {
+			// e2e regression: the disable path used to clear the
+			// placement record only in the finalizer-gated one-shot
+			// cleanup. If that reconcile's status write never landed
+			// (dropped after conflict retries, or an error later in
+			// the same pass), the finalizer-gated cleanup never ran
+			// again and the stale record survived forever — the
+			// resolver honors the record over the spec, so a later
+			// re-enablement's namespace/namePrefix overrides were
+			// silently hijacked by the old placement. The clear must
+			// be level-triggered: any reconcile while the feature is
+			// off removes the record, with or without the finalizer.
+			const staleName = "test-zabbix-metrics-stale-record"
+			staleReq := reconcile.Request{NamespacedName: types.NamespacedName{Name: staleName, Namespace: resourceNamespace}}
+
+			By("creating a feature-off resource carrying a stale placement record (finalizer already released)")
+			createSecretIfMissing(dbSecretName, resourceNamespace, dbSecretData())
+			Expect(k8sClient.Create(ctx, &zabbixv1alpha1.Zabbix{
+				ObjectMeta: metav1.ObjectMeta{Name: staleName, Namespace: resourceNamespace},
+				Spec: zabbixv1alpha1.ZabbixSpec{
+					Version: haTestVersion,
+					Database: zabbixv1alpha1.DatabaseSpec{
+						CNPG: &zabbixv1alpha1.CNPGDatabaseSpec{ClusterName: cnpgClusterName},
+					},
+				},
+			})).Should(Succeed())
+			stale := &zabbixv1alpha1.Zabbix{}
+			Expect(k8sClient.Get(ctx, staleReq.NamespacedName, stale)).Should(Succeed())
+			stale.Status.ClusterMetricsHostName = "stale-cluster-host"
+			stale.Status.ClusterMetricsNamespace = "stale-placement-ns"
+			stale.Status.ClusterMetricsNamePrefix = "stale-prefix"
+			Expect(k8sClient.Status().Update(ctx, stale)).Should(Succeed())
+
+			reconciler := &ZabbixReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, staleReq)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("expecting the stale record cleared without any finalizer-gated cleanup")
+			final := &zabbixv1alpha1.Zabbix{}
+			Expect(k8sClient.Get(ctx, staleReq.NamespacedName, final)).Should(Succeed())
+			Expect(final.Status.ClusterMetricsHostName).To(BeEmpty(),
+				"the stale host name must be cleared while the feature is off")
+			Expect(final.Status.ClusterMetricsNamespace).To(BeEmpty(),
+				"the stale placement record must be cleared while the feature is off")
+			Expect(final.Status.ClusterMetricsNamePrefix).To(BeEmpty(),
+				"the stale placement record must be cleared while the feature is off")
+		})
 	})
 
 	Context("When clusterMetrics placement is overridden", func() {

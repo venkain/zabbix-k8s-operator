@@ -150,6 +150,26 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return persistStatus(ctx, r.Client, &z, *status, databaseRetryDelay)
 	}
 
+	// 1a. The cluster-metrics feature is OFF: the placement record, the
+	// host name and the stale ClusterMetricsReady condition are
+	// obsolete. Clear them on EVERY reconcile while the feature is off
+	// — not only in the one-shot 1c cleanup below (which runs while the
+	// cleanup finalizer is still around). A disable reconcile whose
+	// status write never lands — a conflicting write dropped after the
+	// retries, or an error later in the same reconcile — would
+	// otherwise leave the record behind, and the resolver honors the
+	// record over the spec: a later re-enablement's namespace and
+	// namePrefix overrides would be silently hijacked by the stale
+	// placement. The 1c block below still runs the one-shot cleanup
+	// while the finalizer exists; until then the record on the served
+	// status (z.Status, not this copy) keeps addressing the objects.
+	if !zabbix.ClusterMetricsIsEnabled(&z) {
+		status.ClusterMetricsHostName = ""
+		status.ClusterMetricsNamespace = ""
+		status.ClusterMetricsNamePrefix = ""
+		dropCondition(status, zabbixv1alpha1.ConditionClusterMetricsReady)
+	}
+
 	// 1b. The cluster-metrics cleanup finalizer comes before the first
 	// server-side registration below: deletion must always be able to
 	// clean up the Zabbix host and the cluster-scoped RBAC.
@@ -163,15 +183,14 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// cluster-metrics side effects) are still around: garbage
 	// collection cannot help — the resource itself stays alive — so
 	// the operator removes the host, the endpoint objects and the
-	// cluster-scoped RBAC itself, then releases the finalizer.
+	// cluster-scoped RBAC itself, then releases the finalizer. The
+	// status cleanup (record, host name, condition) is handled by 1a
+	// above, which also covers reconciles where the finalizer is
+	// already gone.
 	if !zabbix.ClusterMetricsIsEnabled(&z) && controllerutil.ContainsFinalizer(&z, ClusterMetricsFinalizer) {
 		if err := r.disableClusterMetrics(ctx, &z); err != nil {
 			return ctrl.Result{}, fmt.Errorf("disabling cluster metrics: %w", err)
 		}
-		dropCondition(status, zabbixv1alpha1.ConditionClusterMetricsReady)
-		status.ClusterMetricsHostName = ""
-		status.ClusterMetricsNamespace = ""
-		status.ClusterMetricsNamePrefix = ""
 	}
 	setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
 		fmt.Sprintf("connection details resolved from secret %s", db.SecretName()), z.Generation)
@@ -326,12 +345,16 @@ func liveOrNone(getErr error, sts *appsv1.StatefulSet) *appsv1.StatefulSet {
 // resource through the watch and hot-loop the controller), and returns the
 // reconcile result. Stale-resourceVersion conflicts (the object changed
 // between the head-of-reconcile read and this write — e.g. through the
-// apply in the same pass) are retried once with a fresh read.
+// apply in the same pass) are retried once with a fresh read; if both
+// attempts conflict, the write is reported as an error instead of being
+// silently dropped — a dropped write would leave the fields this
+// reconcile converged stale until something else rewrites them.
 func persistStatus(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix, status zabbixv1alpha1.ZabbixStatus, requeue time.Duration) (ctrl.Result, error) {
 	if reflect.DeepEqual(z.Status, status) {
 		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 	z.Status = status
+	var lastErr error
 	for attempt := range 2 {
 		if attempt > 0 {
 			// Re-read so the write carries the current resourceVersion.
@@ -346,9 +369,17 @@ func persistStatus(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbi
 			return ctrl.Result{RequeueAfter: requeue}, nil
 		} else if !apierrors.IsConflict(err) {
 			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
+		} else {
+			lastErr = err
 		}
 	}
-	return ctrl.Result{RequeueAfter: requeue}, nil
+	// Both attempts hit a conflict: do not silently drop the write. A
+	// dropped status update returns success to the caller while the
+	// fields this reconcile converged (e.g. the cluster-metrics
+	// placement record) stay stale server-side. Report it instead: the
+	// controller retries with backoff and the next reconcile recomputes
+	// the status from fresh state.
+	return ctrl.Result{}, fmt.Errorf("updating status after 2 conflict attempts: %w", lastErr)
 }
 
 // migrateLegacyServerDeployment drains and removes the legacy server
