@@ -3,8 +3,8 @@ name: zabbix-k8s-operator
 description: A Helm chart to distribute zabbix-k8s-operator
 type: application
 
-version: 0.2.0
-appVersion: "v0.2.0"
+version: 0.3.0
+appVersion: "v0.3.0"
 
 keywords:
   - kubernetes

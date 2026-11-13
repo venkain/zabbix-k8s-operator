@@ -6,8 +6,8 @@ availability, frontend, web service, and proxies — on a PostgreSQL database
 managed by [CloudNativePG](https://cloudnative-pg.io) or provided externally.
 
 **Status: development.** The v1alpha1 API and the core reconcile loops are
-implemented and lab-validated on kind (see
-[Roadmap](#roadmap)); no release has been published yet.
+implemented and lab-validated on kind; releases v0.1.0–v0.3.0 are
+published (see [Roadmap](#roadmap)).
 
 ## What it does
 
@@ -253,7 +253,7 @@ Install the operator (CRDs, RBAC, manager) from the committed bundle:
 
 ```sh
 kubectl apply -f \
-  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.2.0/dist/install.yaml
+  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.3.0/dist/install.yaml
 ```
 
 Or from the Helm chart (`dist/chart`; image defaults to the released
@@ -284,7 +284,7 @@ spec:
     size: 20Gi
 EOF
 kubectl -n monitoring apply -f \
-  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.2.0/config/samples/zabbix_v1alpha1_zabbix.yaml
+  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.3.0/config/samples/zabbix_v1alpha1_zabbix.yaml
 kubectl -n monitoring get zabbix --watch
 ```
 
