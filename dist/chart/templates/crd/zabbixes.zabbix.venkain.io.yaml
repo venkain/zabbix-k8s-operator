@@ -986,6 +986,16 @@ spec:
           status:
             description: status defines the observed state of Zabbix
             properties:
+              apmDataSourceDB:
+                type: string
+              apmDataSourceURL:
+                description: |-
+                  apmDataSourceURL and apmDataSourceDB record the coordinates of
+                  the global APM data source the operator last ensured through the
+                  API. The disable path (telemetry storage removed) uses them to
+                  clear only what the operator itself configured — a data source a
+                  user configured manually in the frontend is never touched.
+                type: string
               clusterMetricsHostName:
                 description: |-
                   clusterMetricsHostName records the Zabbix host name registered by
