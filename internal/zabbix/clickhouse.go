@@ -63,7 +63,7 @@ const (
 func ManagedClickHouseEnabled(z *zabbixv1alpha1.Zabbix) bool {
 	return z.Spec.TelemetryStorage != nil &&
 		z.Spec.TelemetryStorage.ClickHouse.Managed != nil &&
-		supportsTelemetry(z.Spec.Version)
+		SupportsTelemetry(z.Spec.Version)
 }
 
 // ClickHouseEndpoint returns the effective ClickHouse HTTP URL: the
@@ -143,7 +143,7 @@ func ClickHouseStatefulSet(z *zabbixv1alpha1.Zabbix) *appsv1.StatefulSet {
 		Env: []corev1.EnvVar{
 			// The entrypoint creates the database and the Zabbix login
 			// (with password) on first start — no bootstrap job.
-			{Name: "CLICKHOUSE_DB", Value: clickhouseDatabase(z)},
+			{Name: "CLICKHOUSE_DB", Value: ClickHouseDatabase(z)},
 			{Name: "CLICKHOUSE_USER", Value: clickhouseAuthUsername},
 			{Name: "CLICKHOUSE_PASSWORD", ValueFrom: secretKeyRef(
 				ClickHouseAuthSecretName(z.Name), clickhousePasswordKey)},

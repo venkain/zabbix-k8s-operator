@@ -100,6 +100,14 @@ type ProxyAPMSpec struct {
 	// the official ZBX_APMTLS* entrypoint interface.
 	// +optional
 	TLSSecretRef *ProxyAPMTLS `json:"tlsSecretRef,omitempty"`
+
+	// maxMessagesPerSecond is the per-member OTLP message quota
+	// (max_messages_per_second of the server-side proxy APM
+	// configuration, pushed through the API).
+	// +kubebuilder:default=10000
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxMessagesPerSecond int64 `json:"maxMessagesPerSecond,omitempty"`
 }
 
 // ProxyAPMTLS points at the listener TLS material inside one Secret.
@@ -156,6 +164,33 @@ type ZabbixProxyGroupStatus struct {
 	// group has not been resolved through the API yet.
 	// +optional
 	GroupState string `json:"groupState,omitempty"`
+
+	// apm memoizes the per-proxy APM enablement the operator pushed
+	// through the API: the proxy.apm state is not readable back via
+	// proxy.get, so the members and quota of the last successful
+	// registration are recorded here — the disable and re-configure
+	// paths address members through it, and generation/quota drift
+	// triggers a full re-assert. Cleared once the members are disabled
+	// server-side.
+	// +optional
+	APM *ProxyGroupAPMStatus `json:"apm,omitempty"`
+}
+
+// ProxyGroupAPMStatus records which members were last registered for
+// APM data collection server-side.
+type ProxyGroupAPMStatus struct {
+	// generation is the ZabbixProxyGroup generation the registration
+	// was made for.
+	// +optional
+	Generation int64 `json:"generation,omitempty"`
+
+	// members are the member proxy record names enabled server-side.
+	// +optional
+	Members []string `json:"members,omitempty"`
+
+	// maxMessagesPerSecond is the quota pushed with the registration.
+	// +optional
+	MaxMessagesPerSecond int64 `json:"maxMessagesPerSecond,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -211,6 +246,11 @@ const (
 	// side of the group (group object and member proxy records) is in
 	// sync.
 	ConditionProxyGroupAPIReady ProxyGroupConditionType = "APIReady"
+
+	// ConditionAPMRegistered indicates the per-proxy APM data
+	// collection (the server-side apm object driving the members' OTLP
+	// listener) is enabled for all group members through the API.
+	ConditionAPMRegistered ProxyGroupConditionType = "APMRegistered"
 )
 
 func init() {

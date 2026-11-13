@@ -61,6 +61,13 @@ const clusterMetricsRetryDelay = 30 * time.Second
 // creation can take a while).
 const telemetryRetryDelay = 15 * time.Second
 
+// apmDataSourceRetryDelay is the requeue delay while the global APM
+// data source (settings.apm_global_db) is converging through the API.
+// When converged it doubles as the drift-check cadence: like the
+// cluster-metrics host, the data source lives outside Kubernetes and
+// must be realigned periodically.
+const apmDataSourceRetryDelay = 30 * time.Second
+
 // ClusterMetricsFinalizer guards the server-side Zabbix host and the
 // cluster-scoped RBAC the feature creates: deleting the resource must
 // remove the host (otherwise the server keeps scraping a dead endpoint)
@@ -230,6 +237,13 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
+	// 3b. Global APM data source: with the ClickHouse telemetry storage
+	// in place the server-side data source (settings.apm_global_db) is
+	// ensured through the API, and proxies without a local provider can
+	// route their accepted OTLP data to it. Cleared when the telemetry
+	// storage goes away. Failures are non-fatal (retried on cadence).
+	apmDataSourceDelay := r.ensureAPMDataSource(ctx, &z, status)
+
 	// 4. Converge every owned object.
 	if err := zabbix.ConvergeAll(ctx, r.Client, &z, db, serverSTS); err != nil {
 		return ctrl.Result{}, fmt.Errorf("converging Zabbix %s: %w", req.NamespacedName, err)
@@ -278,13 +292,24 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// registration lives outside Kubernetes and must be realigned.
 		requeueDelay = clusterMetricsDelay
 	}
-	if telemetryDelay > requeueDelay {
-		// Managed ClickHouse still coming up: re-poll readiness until
-		// the pod is healthy (single node — no rollout phases).
-		requeueDelay = telemetryDelay
-	}
+	requeueDelay = foldRequeueDelays(requeueDelay, telemetryDelay, apmDataSourceDelay)
 
 	return persistStatus(ctx, r.Client, &z, *status, requeueDelay)
+}
+
+// foldRequeueDelays returns the largest pending cadence: the slowest
+// convergence in flight dictates when the next reconcile runs. Kept as
+// a helper so Reconcile stays readable (and lintable).
+func foldRequeueDelays(current time.Duration, delays ...time.Duration) time.Duration {
+	for _, d := range delays {
+		// Managed ClickHouse still coming up: re-poll readiness until
+		// the pod is healthy. Global APM data source: realign cadence
+		// while enabled, retry cadence while converging.
+		if d > current {
+			current = d
+		}
+	}
+	return current
 }
 
 // liveOrNone returns the live StatefulSet when it exists, nil otherwise.
@@ -462,6 +487,148 @@ func apiToken(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix) (s
 		return "", fmt.Errorf("API token secret %q has an empty key %q", ref.Name, ref.Key)
 	}
 	return string(token), nil
+}
+
+// ensureAPMDataSource converges the global APM telemetry data source
+// (the settings.apm_global_db object, "Administration → Data source")
+// with the instance's ClickHouse telemetry storage: enabled with the
+// storage's endpoint/database/credentials while the storage is
+// configured, cleared when it is removed. Coordinates are memoized on
+// the status so the clear path only ever touches a data source this
+// instance ensured itself. Failures are non-fatal: the condition
+// reports them and the delay keeps the reconcile retrying at a human
+// pace.
+func (r *ZabbixReconciler) ensureAPMDataSource(ctx context.Context, z *zabbixv1alpha1.Zabbix, status *zabbixv1alpha1.ZabbixStatus) time.Duration {
+	log := logf.FromContext(ctx)
+
+	if z.Spec.TelemetryStorage == nil || !zabbix.SupportsTelemetry(z.Spec.Version) {
+		if err := r.clearAPMDataSource(ctx, z, status); err != nil {
+			setCond(status, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+				"DataSourceClearFailed", err.Error(), z.Generation)
+			return apmDataSourceRetryDelay
+		}
+		// Nothing of ours is left to clear: without the telemetry
+		// storage the data source is not an operator-owned concern.
+		dropCondition(status, zabbixv1alpha1.ConditionDataSourceReady)
+		return 0
+	}
+
+	if z.Spec.API == nil {
+		// No API token: the global data source cannot be managed. The
+		// frontend/server environment wiring keeps APM functional for
+		// instances that configure a data source themselves.
+		dropCondition(status, zabbixv1alpha1.ConditionDataSourceReady)
+		return 0
+	}
+
+	token, err := apiToken(ctx, r.Client, z)
+	if err != nil {
+		setCond(status, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+			"APITokenPending", err.Error(), z.Generation)
+		return apmDataSourceRetryDelay
+	}
+	endpoint := zabbix.APIEndpoint(z)
+	ds, err := zabbix.FetchAPMGlobalDB(ctx, r.HTTP, endpoint, token)
+	if err != nil {
+		setCond(status, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+			"APIUnreachable", err.Error(), z.Generation)
+		return apmDataSourceRetryDelay
+	}
+
+	username, password, err := clickHouseAPMCredentials(ctx, r.Client, z)
+	if err != nil {
+		setCond(status, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+			"CredentialsUnresolved", err.Error(), z.Generation)
+		return apmDataSourceRetryDelay
+	}
+
+	desired := zabbix.APMGlobalDB{
+		Status:   zabbix.APMStatusEnabled,
+		URL:      zabbix.ClickHouseEndpoint(z),
+		Database: zabbix.ClickHouseDatabase(z),
+		Username: username,
+	}
+	if ds.Status != desired.Status || ds.URL != desired.URL ||
+		ds.Database != desired.Database || ds.Username != desired.Username {
+		// Diff-based write: settings.get exposes every field except the
+		// write-only password, so an unchanged data source is never
+		// rewritten (and never re-encrypts the password server-side).
+		if err := zabbix.UpdateAPMGlobalDB(ctx, r.HTTP, endpoint, token, password, desired); err != nil {
+			setCond(status, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+				"DataSourceUpdateFailed", err.Error(), z.Generation)
+			return apmDataSourceRetryDelay
+		}
+		log.Info("ensured the global APM data source", "url", desired.URL, "db", desired.Database)
+	}
+	status.APMDataSourceURL = desired.URL
+	status.APMDataSourceDB = desired.Database
+	setCond(status, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionTrue,
+		"DataSourceEnsured", fmt.Sprintf("global APM data source points at %s (%s)", desired.URL, desired.Database), z.Generation)
+	return apmDataSourceRetryDelay
+}
+
+// clearAPMDataSource disables the global APM data source when it still
+// carries the coordinates this instance last ensured. A data source
+// pointing elsewhere (configured by hand in the frontend) is never
+// touched.
+func (r *ZabbixReconciler) clearAPMDataSource(ctx context.Context, z *zabbixv1alpha1.Zabbix, status *zabbixv1alpha1.ZabbixStatus) error {
+	if z.Spec.API == nil || status.APMDataSourceURL == "" {
+		return nil
+	}
+	token, err := apiToken(ctx, r.Client, z)
+	if err != nil {
+		return err
+	}
+	ds, err := zabbix.FetchAPMGlobalDB(ctx, r.HTTP, zabbix.APIEndpoint(z), token)
+	if err != nil {
+		return err
+	}
+	if ds.Status != zabbix.APMStatusEnabled || ds.URL != status.APMDataSourceURL ||
+		ds.Database != status.APMDataSourceDB {
+		// Already disabled, or configured to coordinates this instance
+		// never ensured — leave it alone.
+		status.APMDataSourceURL = ""
+		status.APMDataSourceDB = ""
+		return nil
+	}
+	disabled := zabbix.APMGlobalDB{Status: zabbix.APMStatusDisabled}
+	if err := zabbix.UpdateAPMGlobalDB(ctx, r.HTTP, zabbix.APIEndpoint(z), token, "", disabled); err != nil {
+		return err
+	}
+	logf.FromContext(ctx).Info("cleared the global APM data source", "url", status.APMDataSourceURL, "db", status.APMDataSourceDB)
+	status.APMDataSourceURL = ""
+	status.APMDataSourceDB = ""
+	return nil
+}
+
+// clickHouseAPMCredentials resolves the ClickHouse login for the global
+// APM data source from the effective credential Secret (the managed
+// auth Secret, or the referenced credentials Secret in external mode).
+// Empty key references fall back to the documented defaults
+// username/password — the same defaults the credential file mounts use
+// (secretMountFile in internal/zabbix).
+func clickHouseAPMCredentials(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix) (string, string, error) {
+	creds := zabbix.ClickHouseCreds(z)
+	usernameKey, passwordKey := creds.UsernameKey, creds.PasswordKey
+	if usernameKey == "" {
+		usernameKey = "username"
+	}
+	if passwordKey == "" {
+		passwordKey = "password"
+	}
+	var secret corev1.Secret
+	if err := c.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: creds.SecretName}, &secret); err != nil {
+		return "", "", fmt.Errorf("reading ClickHouse credentials secret %q: %w", creds.SecretName, err)
+	}
+	username, ok := secret.Data[usernameKey]
+	if !ok || len(username) == 0 {
+		return "", "", fmt.Errorf("ClickHouse credentials secret %q has an empty key %q", creds.SecretName, usernameKey)
+	}
+	password, ok := secret.Data[passwordKey]
+	if !ok || len(password) == 0 {
+		return "", "", fmt.Errorf("ClickHouse credentials secret %q has an empty key %q", creds.SecretName, passwordKey)
+	}
+	return string(username), string(password), nil
 }
 
 // ensureClusterMetrics converges the cluster-metrics ingestion and

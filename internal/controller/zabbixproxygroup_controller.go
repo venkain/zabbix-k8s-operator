@@ -251,7 +251,148 @@ func (r *ZabbixProxyGroupReconciler) maintainProxyGroup(ctx context.Context, pg 
 	// contact within the failover window" (no online flag exists on
 	// proxy objects — see proxy.lastaccess and the group state docs).
 	status.OnlineReplicas = zabbix.MembersOnline(members, pg.Name, zabbix.FailoverDelay(pg), time.Now())
+
+	// 6. Per-proxy APM data collection: the members' OTLP listener only
+	// activates once the server-side apm object enables it (pushed to
+	// the proxies through the config syncer). Failures are non-fatal —
+	// they surface in the APMRegistered condition and retry on cadence.
+	r.ensureAPMRegistration(ctx, endpoint, token, pg, status, z, members)
 	return nil
+}
+
+// ensureAPMRegistration converges the per-proxy APM data collection
+// (the server-side proxy.apm object that drives the members' OTLP
+// listener) with the spec:
+//
+//   - spec.apm unset or a pre-8.0 version: members memoized in
+//     status.APM are disabled server-side, then the memo and the
+//     APMRegistered condition are cleared.
+//   - spec.apm set: every managed member is enabled when the
+//     registration is stale (generation or quota drift, empty memo),
+//     otherwise only members not yet registered (scale-up). The proxy
+//     apm state is not readable back through proxy.get (no output
+//     field, no selectAPM), so the memo is the only record of what was
+//     pushed.
+func (r *ZabbixProxyGroupReconciler) ensureAPMRegistration(ctx context.Context, endpoint, token string, pg *zabbixv1alpha1.ZabbixProxyGroup, status *zabbixv1alpha1.ZabbixProxyGroupStatus, z *zabbixv1alpha1.Zabbix, members []zabbix.ProxyMember) {
+	log := logf.FromContext(ctx)
+
+	if pg.Spec.APM == nil || !zabbix.SupportsTelemetry(pg.Spec.Version) {
+		r.disableAPMRegistration(ctx, endpoint, token, pg, status, members)
+		return
+	}
+	if z.Spec.TelemetryStorage == nil {
+		// The collector would accept data with nowhere to write it: the
+		// operator wires no local provider and manages no global data
+		// source without the telemetry storage. Hold off (memo and any
+		// earlier registration stay untouched) until the storage
+		// appears.
+		setPGCond(status, zabbixv1alpha1.ConditionAPMRegistered, "False",
+			"TelemetryStorageUnresolved",
+			"spec.apm needs telemetryStorage.clickhouse on the referenced Zabbix resource", pg.Generation)
+		return
+	}
+
+	liveByName := make(map[string]zabbix.ProxyMember, len(members))
+	for _, m := range members {
+		liveByName[m.Name] = m
+	}
+	quota := zabbix.APMQuota(pg)
+
+	replicas := zabbix.DesiredProxyReplicas(pg)
+	desiredNames := make([]string, 0, replicas)
+	for i := range replicas {
+		desiredNames = append(desiredNames, zabbix.ProxyRecordName(pg.Name, i))
+	}
+
+	// Re-assert every member on generation/quota drift or an empty
+	// memo; otherwise only the members a scale-up added.
+	full := status.APM == nil || status.APM.Generation != pg.Generation ||
+		status.APM.MaxMessagesPerSecond != quota
+	known := make(map[string]bool, len(desiredNames))
+	if !full && status.APM != nil {
+		for _, name := range status.APM.Members {
+			known[name] = true
+		}
+	}
+
+	updates := make([]zabbix.ProxyAPMUpdate, 0, len(desiredNames))
+	for _, name := range desiredNames {
+		if !full && known[name] {
+			continue
+		}
+		m, ok := liveByName[name]
+		if !ok {
+			// Member record missing server-side: the member sync above
+			// either created it or failed loudly, so this is transient.
+			continue
+		}
+		updates = append(updates, zabbix.ProxyAPMUpdate{
+			ProxyID:              m.ID,
+			Enabled:              true,
+			MaxMessagesPerSecond: quota,
+		})
+	}
+	if len(updates) > 0 {
+		if err := zabbix.UpdateProxiesAPM(ctx, r.HTTP, endpoint, token, updates); err != nil {
+			log.Error(err, "enabling per-proxy APM data collection failed")
+			setPGCond(status, zabbixv1alpha1.ConditionAPMRegistered, "False",
+				"APMEnableFailed", err.Error(), pg.Generation)
+			return
+		}
+	}
+	status.APM = &zabbixv1alpha1.ProxyGroupAPMStatus{
+		Generation:           pg.Generation,
+		Members:              desiredNames,
+		MaxMessagesPerSecond: quota,
+	}
+	setPGCond(status, zabbixv1alpha1.ConditionAPMRegistered, "True", "APMRegistered",
+		fmt.Sprintf("OTLP data collection enabled for %d member(s) (quota %d msg/s)",
+			len(desiredNames), quota), pg.Generation)
+}
+
+// disableAPMRegistration disables APM data collection server-side for
+// the members the last successful registration enabled, then clears the
+// memo and the APMRegistered condition. Failures keep the memo (the
+// members are retried on the next reconcile) and surface in the
+// condition.
+func (r *ZabbixProxyGroupReconciler) disableAPMRegistration(ctx context.Context, endpoint, token string, pg *zabbixv1alpha1.ZabbixProxyGroup, status *zabbixv1alpha1.ZabbixProxyGroupStatus, members []zabbix.ProxyMember) {
+	if status.APM == nil {
+		return
+	}
+	liveByName := make(map[string]zabbix.ProxyMember, len(members))
+	for _, m := range members {
+		liveByName[m.Name] = m
+	}
+	var updates []zabbix.ProxyAPMUpdate
+	for _, name := range status.APM.Members {
+		// Only records the memo knows about are addressed; user-created
+		// proxies in a shared group are never touched.
+		if m, ok := liveByName[name]; ok {
+			updates = append(updates, zabbix.ProxyAPMUpdate{ProxyID: m.ID})
+		}
+	}
+	if len(updates) > 0 {
+		if err := zabbix.UpdateProxiesAPM(ctx, r.HTTP, endpoint, token, updates); err != nil {
+			logf.FromContext(ctx).Error(err, "disabling per-proxy APM data collection failed")
+			setPGCond(status, zabbixv1alpha1.ConditionAPMRegistered, "False",
+				"APMDisableFailed", err.Error(), pg.Generation)
+			return
+		}
+	}
+	status.APM = nil
+	dropPGCondition(status, zabbixv1alpha1.ConditionAPMRegistered)
+}
+
+// dropPGCondition removes one condition type from the proxy group
+// status — used when the feature it tracks is switched off.
+func dropPGCondition(status *zabbixv1alpha1.ZabbixProxyGroupStatus, t zabbixv1alpha1.ProxyGroupConditionType) {
+	kept := make([]metav1.Condition, 0, len(status.Conditions))
+	for _, c := range status.Conditions {
+		if c.Type != string(t) {
+			kept = append(kept, c)
+		}
+	}
+	status.Conditions = kept
 }
 
 // syncGroupMembers converges the member proxy records. Desired members

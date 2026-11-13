@@ -206,6 +206,7 @@ kind: ZabbixProxyGroup
 spec:
   apm:
     listenPort: 4317           # default
+    maxMessagesPerSecond: 10000  # per-member OTLP quota
     # tlsSecretRef:
     #   secretName: apm-tls    # listener TLS (ca.crt / tls.crt / tls.key)
 ```
@@ -215,8 +216,25 @@ Zabbix resource — with the managed backend that is the same namespace's
 ClickHouse; a proxy group in a *different* namespace needs the external
 endpoint mode (the auth Secret is not visible across namespaces).
 
+**Server-side APM activation (automatic).** The proxy's OTLP listener
+additionally needs two server-side settings the operator converges
+through the Zabbix API whenever the instance has `spec.api` (a token):
+the global APM data source (`settings.apm_global_db`, the
+"Administration → Data source" object — enabled with the telemetry
+storage's endpoint/database/credentials, cleared when the storage is
+removed) and the per-proxy APM data-collection switch
+(`proxy.update` with `apm.dataCollectionStatus`/`maxMessagesPerSecond`
+for every managed member). This is what turns `spec.apm` into a
+one-line feature: patch it on and the members start accepting OTLP —
+no manual frontend/API steps. The data source is cleared only when it
+still carries the coordinates the operator ensured itself (a data
+source configured by hand in the frontend is never touched).
+
 **Status.** The managed backend reports through the
-`TelemetryStorageReady` condition on the Zabbix resource.
+`TelemetryStorageReady` condition on the Zabbix resource, the global
+data source through `DataSourceReady` (skipped without an API token —
+configure the data source yourself in that case), and the per-proxy
+enablement through `APMRegistered` on the ZabbixProxyGroup.
 
 ## Testing
 

@@ -68,8 +68,8 @@ func TestSupportsTelemetry(t *testing.T) {
 		{"garbage", false},
 	}
 	for _, tc := range cases {
-		if got := supportsTelemetry(tc.version); got != tc.want {
-			t.Errorf("supportsTelemetry(%q) = %v, want %v", tc.version, got, tc.want)
+		if got := SupportsTelemetry(tc.version); got != tc.want {
+			t.Errorf("SupportsTelemetry(%q) = %v, want %v", tc.version, got, tc.want)
 		}
 	}
 }

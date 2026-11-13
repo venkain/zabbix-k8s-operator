@@ -502,6 +502,13 @@ const (
 	// backend (spec.telemetryStorage.clickhouse.managed) is deployed
 	// and its pod is healthy.
 	ConditionTelemetryStorageReady ComponentConditionType = "TelemetryStorageReady"
+
+	// ConditionDataSourceReady indicates the global APM telemetry data
+	// source (the settings.apm_global_db object) is converged on the
+	// server through the API — enabled alongside the ClickHouse
+	// telemetry storage, cleared when it is removed. Requires spec.api
+	// (a token); without one the data source is not managed.
+	ConditionDataSourceReady ComponentConditionType = "DataSourceReady"
 )
 
 // ZabbixStatus defines the observed state of Zabbix.
@@ -544,6 +551,16 @@ type ZabbixStatus struct {
 	// address the objects through it after the spec field is gone.
 	// +optional
 	ClusterMetricsNamePrefix string `json:"clusterMetricsNamePrefix,omitempty"`
+
+	// apmDataSourceURL and apmDataSourceDB record the coordinates of
+	// the global APM data source the operator last ensured through the
+	// API. The disable path (telemetry storage removed) uses them to
+	// clear only what the operator itself configured — a data source a
+	// user configured manually in the frontend is never touched.
+	// +optional
+	APMDataSourceURL string `json:"apmDataSourceURL,omitempty"`
+	// +optional
+	APMDataSourceDB string `json:"apmDataSourceDB,omitempty"`
 }
 
 // +kubebuilder:object:root=true

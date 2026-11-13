@@ -64,16 +64,16 @@ const (
 	schemaCreateJSON = `{"create":true}`
 )
 
-// supportsTelemetry reports whether the Zabbix release exposes the
+// SupportsTelemetry reports whether the Zabbix release exposes the
 // provider/APM entrypoint interface (8.0+).
-func supportsTelemetry(version string) bool {
+func SupportsTelemetry(version string) bool {
 	major, ok := majorVersion(version)
 	return ok && major >= 8
 }
 
-// clickhouseDatabase returns the configured database name ("zabbix" by
+// ClickHouseDatabase returns the configured database name ("zabbix" by
 // default, matching the official setup guide).
-func clickhouseDatabase(z *zabbixv1alpha1.Zabbix) string {
+func ClickHouseDatabase(z *zabbixv1alpha1.Zabbix) string {
 	if db := z.Spec.TelemetryStorage.ClickHouse.Database; db != "" {
 		return db
 	}
@@ -94,7 +94,7 @@ func clickhouseProviderJSON(z *zabbixv1alpha1.Zabbix, valueTypes []string) strin
 	b.WriteString(`{"provider":"clickhouse","url":`)
 	b.WriteString(jsonValue(ClickHouseEndpoint(z)))
 	b.WriteString(`,"db":`)
-	b.WriteString(jsonValue(clickhouseDatabase(z)))
+	b.WriteString(jsonValue(ClickHouseDatabase(z)))
 	if len(valueTypes) > 0 {
 		b.WriteString(`,"types":[`)
 		for i, t := range valueTypes {
@@ -143,7 +143,7 @@ func clickhouseCredentialsFileEnv(prefix, usernameFile, passwordFile string) []c
 // ZBX_HISTORYPROVIDER_0 (history), ZBX_TELEMETRYPROVIDER_0 (telemetry
 // query items) and the telemetry query pollers.
 func ServerTelemetryEnvs(z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
-	if z.Spec.TelemetryStorage == nil || !supportsTelemetry(z.Spec.Version) {
+	if z.Spec.TelemetryStorage == nil || !SupportsTelemetry(z.Spec.Version) {
 		return nil
 	}
 	creds := ClickHouseCreds(z)
@@ -177,7 +177,7 @@ func ServerTelemetryEnvs(z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
 // FrontendTelemetryEnvs wires the frontend to the same ClickHouse
 // providers (history reads + the APM menu's telemetry data source).
 func FrontendTelemetryEnvs(z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
-	if z.Spec.TelemetryStorage == nil || !supportsTelemetry(z.Spec.Version) {
+	if z.Spec.TelemetryStorage == nil || !SupportsTelemetry(z.Spec.Version) {
 		return nil
 	}
 	creds := ClickHouseCreds(z)
@@ -205,7 +205,7 @@ func FrontendTelemetryEnvs(z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
 // Gated on the proxy's own version (the 8.0 proxy image understands the
 // variable; the provider JSON itself is version-independent).
 func ProxyTelemetryEnvs(pg *zabbixv1alpha1.ZabbixProxyGroup, z *zabbixv1alpha1.Zabbix) []corev1.EnvVar {
-	if z.Spec.TelemetryStorage == nil || !supportsTelemetry(pg.Spec.Version) {
+	if z.Spec.TelemetryStorage == nil || !SupportsTelemetry(pg.Spec.Version) {
 		return nil
 	}
 	creds := ClickHouseCreds(z)
@@ -228,7 +228,7 @@ func ProxyTelemetryEnvs(pg *zabbixv1alpha1.ZabbixProxyGroup, z *zabbixv1alpha1.Z
 // ProxyAPMEnvs enables the OTLP/gRPC APM collector on the member and
 // wires the listener TLS material when configured.
 func ProxyAPMEnvs(pg *zabbixv1alpha1.ZabbixProxyGroup) []corev1.EnvVar {
-	if pg.Spec.APM == nil || !supportsTelemetry(pg.Spec.Version) {
+	if pg.Spec.APM == nil || !SupportsTelemetry(pg.Spec.Version) {
 		return nil
 	}
 	env := []corev1.EnvVar{
@@ -245,6 +245,20 @@ func ProxyAPMEnvs(pg *zabbixv1alpha1.ZabbixProxyGroup) []corev1.EnvVar {
 	return env
 }
 
+// defaultAPMQuota is the per-member APM message quota (messages/second)
+// used when spec.apm.maxMessagesPerSecond is unset — the value the
+// official proxy configuration example suggests.
+const defaultAPMQuota int64 = 10000
+
+// APMQuota returns the effective per-member APM message quota
+// (max_messages_per_second in the server-side proxy.apm record).
+func APMQuota(pg *zabbixv1alpha1.ZabbixProxyGroup) int64 {
+	if pg.Spec.APM != nil && pg.Spec.APM.MaxMessagesPerSecond > 0 {
+		return pg.Spec.APM.MaxMessagesPerSecond
+	}
+	return defaultAPMQuota
+}
+
 // APMListenPort returns the configured OTLP/gRPC listener port (4317 by
 // default, the OpenTelemetry receiver default).
 func APMListenPort(pg *zabbixv1alpha1.ZabbixProxyGroup) int32 {
@@ -258,7 +272,7 @@ func APMListenPort(pg *zabbixv1alpha1.ZabbixProxyGroup) int32 {
 // APM collector is enabled (Zabbix 8.0+), or 0 when disabled — used by
 // callers that add the container port conditionally.
 func APMListenPortIfEnabled(pg *zabbixv1alpha1.ZabbixProxyGroup) int32 {
-	if pg.Spec.APM == nil || !supportsTelemetry(pg.Spec.Version) {
+	if pg.Spec.APM == nil || !SupportsTelemetry(pg.Spec.Version) {
 		return 0
 	}
 	return APMListenPort(pg)

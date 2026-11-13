@@ -253,6 +253,33 @@ and third-party tutorials are never normative and are not cited here.
 
 ## Decision log
 
+- 2026-11-13: APM server-side activation automated (`spec.apm` becomes a
+  one-line feature). Lab discovery showed the proxy's OTLP listener is
+  gated by three layers — operator env wiring, the global APM data
+  source (`settings.apm_global_db`; no datasource.* API exists), and
+  the per-proxy APM switch (`proxy.update apm`; stored in the proxy
+  table's apm column, not readable back via proxy.get — no output
+  field, no selectAPM). Design:
+  - **Global data source** lives in the Zabbix controller, tied to the
+    telemetry storage lifecycle: ensured (settings.update with the
+    storage's endpoint/db/credentials, password write-only, diff-based
+    writes) when ClickHouse telemetry storage is present, cleared when
+    it is removed. Coordinates memoized on the status
+    (`apmDataSourceURL`/`apmDataSourceDB`) so the clear path only ever
+    disables a data source the operator ensured itself — a user-configured
+    one is never touched. Skipped silently without `spec.api` (token);
+    condition `DataSourceReady`.
+  - **Per-proxy enablement** lives in the proxygroup controller's
+    `maintainProxyGroup` (it already owns member registration): enabled
+    for all managed members on generation/quota drift or an empty memo,
+    otherwise only scale-up additions; disabled from the status memo on
+    spec removal (proxy.apm unreadable ⇒ memoization in
+    `status.apm {generation, members, maxMessagesPerSecond}` is the
+    only record). Gated on the referenced resource's telemetry storage
+    (collector would accept data with nowhere to write it) and on the
+    proxy's own 8.0 version. Condition `APMRegistered`.
+  - Quota knob `spec.apm.maxMessagesPerSecond` (default 10000, the
+    official example's value) pushed as `max_messages_per_second`.
 - 2026-11-12: Telemetry & APM slices 1+2 shipped (`spec.telemetryStorage`
   + `spec.apm`, merged to main). Design choices:
   - **Official env contract only**: `ZBX_HISTORYPROVIDER_0` /

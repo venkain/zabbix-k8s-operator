@@ -19,8 +19,11 @@ spec:
   # Optional (Zabbix 8.0+): run the OpenTelemetry (APM) collector on
   # every member; applications submit OTLP/gRPC to the group's
   # <name>-proxy-apm Service. Data lands in the telemetry provider
-  # (ClickHouse) configured on the referenced Zabbix resource.
+  # (ClickHouse) configured on the referenced Zabbix resource, and the
+  # operator also enables the server-side APM configuration (global
+  # data source + per-proxy data collection) through the Zabbix API.
   # apm:
   #   listenPort: 4317             # default: 4317 (OTLP/gRPC)
+  #   maxMessagesPerSecond: 10000  # per-member OTLP message quota
   #   tlsSecretRef:
   #     secretName: apm-tls
