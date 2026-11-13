@@ -670,6 +670,214 @@ spec:
                         type: object
                     type: object
                 type: object
+              telemetryStorage:
+                description: |-
+                  telemetryStorage routes item history and APM telemetry through
+                  ClickHouse instead of the SQL database (Zabbix 8.0+; ignored on
+                  older versions). Optional; off by default.
+                properties:
+                  clickhouse:
+                    description: |-
+                      clickhouse is the ClickHouse endpoint configuration. History is
+                      routed server- and frontend-side; the telemetry provider is wired
+                      to the server (telemetry query items), the frontend (APM menu) and
+                      every operator-managed proxy group (APM collector output).
+                    properties:
+                      createSchema:
+                        description: |-
+                          createSchema lets the image entrypoint create the history tables
+                          on startup (official _SCHEMA={"create":true} behavior). Set false
+                          when the schema was imported manually (e.g. migrated from an SQL
+                          database). Defaults to true.
+                        type: boolean
+                      credentialsSecretRef:
+                        description: |-
+                          credentialsSecretRef names a Secret carrying the ClickHouse
+                          username and password. The operator mounts it read-only and points
+                          the image entrypoints at the files. Required unless managed mode
+                          is enabled (the managed credentials are operator-generated).
+                        properties:
+                          passwordKey:
+                            description: |-
+                              passwordKey is the Secret key holding the password. Defaults to
+                              "password".
+                            type: string
+                          secretName:
+                            description: secretName is the Secret name.
+                            type: string
+                          usernameKey:
+                            description: |-
+                              usernameKey is the Secret key holding the username. Defaults to
+                              "username".
+                            type: string
+                        required:
+                        - secretName
+                        type: object
+                      database:
+                        description: |-
+                          database is the ClickHouse database holding the zabbix tables
+                          (history_uint, history, ...). Defaults to "zabbix".
+                        type: string
+                      endpoint:
+                        description: |-
+                          endpoint is the ClickHouse HTTP interface URL (port 8123), e.g.
+                          "http://clickhouse.monitoring.svc:8123". Required unless managed
+                          mode is enabled (the managed endpoint is derived from the managed
+                          StatefulSet's Service).
+                        pattern: ^https?://[a-zA-Z0-9.\-_:]+[0-9]*$
+                        type: string
+                      managed:
+                        description: |-
+                          managed, when set, has the operator deploy a single-node
+                          ClickHouse (StatefulSet + PVC + Service) in the Zabbix resource's
+                          namespace, generate its credentials into an operator-owned Secret
+                          and wire the Zabbix stack to it. Simplest setup; for production
+                          history volumes prefer a managed external cluster behind a load
+                          balancer.
+                        properties:
+                          image:
+                            description: |-
+                              image overrides the ClickHouse server image. The default is the
+                              official clickhouse/clickhouse-server image at a version inside
+                              the range the Zabbix 8.0 requirements list (26.3–26.9).
+                            properties:
+                              pullPolicy:
+                                description: pullPolicy is the image pull policy.
+                                enum:
+                                - Always
+                                - IfNotPresent
+                                - Never
+                                type: string
+                              repository:
+                                description: repository replaces the default image
+                                  repository.
+                                type: string
+                              tag:
+                                description: tag replaces the tag derived from spec.version.
+                                type: string
+                            type: object
+                          resources:
+                            description: resources for the ClickHouse server container.
+                            properties:
+                              claims:
+                                description: |-
+                                  Claims lists the names of resources, defined in spec.resourceClaims,
+                                  that are used by this container.
+
+                                  This field depends on the
+                                  DynamicResourceAllocation feature gate.
+
+                                  This field is immutable. It can only be set for containers.
+                                items:
+                                  description: ResourceClaim references one entry
+                                    in PodSpec.ResourceClaims.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name must match the name of one entry in pod.spec.resourceClaims of
+                                        the Pod where this field is used. It makes that resource available
+                                        inside a container.
+                                      type: string
+                                    request:
+                                      description: |-
+                                        Request is the name chosen for a request in the referenced claim.
+                                        If empty, everything from the claim is made available, otherwise
+                                        only the result of this request.
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
+                              limits:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Limits describes the maximum amount of compute resources allowed.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                              requests:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Requests describes the minimum amount of compute resources required.
+                                  If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                  otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                            type: object
+                          storage:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            default: 10Gi
+                            description: storage size of the ClickHouse data PersistentVolumeClaim.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: |-
+                              storageClassName for the data PersistentVolumeClaim. Empty uses
+                              the cluster default storage class.
+                            type: string
+                        type: object
+                      tls:
+                        description: |-
+                          tls optionally secures the ClickHouse connection with CA / client
+                          certificate material from a Secret. External endpoints only: the
+                          operator-managed single node is not TLS-terminated.
+                        properties:
+                          caKey:
+                            description: |-
+                              caKey is the Secret key holding the CA certificate. Defaults to
+                              "ca.crt". Omit (empty) to skip CA verification.
+                            type: string
+                          certKey:
+                            description: |-
+                              certKey is the Secret key holding the client certificate.
+                              Defaults to "tls.crt".
+                            type: string
+                          keyKey:
+                            description: |-
+                              keyKey is the Secret key holding the client private key. Defaults
+                              to "tls.key".
+                            type: string
+                          secretName:
+                            description: secretName is the Secret carrying the TLS
+                              material.
+                            type: string
+                        required:
+                        - secretName
+                        type: object
+                      valueTypes:
+                        description: |-
+                          valueTypes routes only these item value types to ClickHouse
+                          (uint, dbl, str, log, text, json). Empty routes all supported
+                          types.
+                        items:
+                          pattern: ^(uint|dbl|str|log|text|json)$
+                          type: string
+                        type: array
+                    type: object
+                    x-kubernetes-validations:
+                    - message: endpoint is required unless managed mode is enabled
+                        (the managed endpoint is derived)
+                      rule: has(self.managed) || has(self.endpoint)
+                    - message: credentialsSecretRef is required unless managed mode
+                        is enabled (the managed credentials are operator-generated)
+                      rule: has(self.managed) || has(self.credentialsSecretRef)
+                required:
+                - clickhouse
+                type: object
               version:
                 description: |-
                   version is the Zabbix release to deploy (e.g. "8.0" or "7.0"). It
