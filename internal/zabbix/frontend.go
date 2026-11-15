@@ -61,6 +61,7 @@ func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deplo
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
+					SecurityContext: PodSecurityContext(),
 					Containers: []corev1.Container{{
 						Name:            "zabbix-frontend",
 						Image:           ImageFor("web-nginx-pgsql", z.Spec.Version, frontendImage(spec)),
@@ -138,6 +139,7 @@ func WebServiceDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
+					SecurityContext: PodSecurityContext(),
 					Containers: []corev1.Container{{
 						Name:            "zabbix-web-service",
 						Image:           ImageFor("web-service", z.Spec.Version, webServiceImage(spec)),
