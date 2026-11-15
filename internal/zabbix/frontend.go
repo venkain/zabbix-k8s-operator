@@ -19,7 +19,6 @@ package zabbix
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -36,8 +35,6 @@ func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deplo
 	spec := z.Spec.Frontend
 	replicas := FrontendReplicas(z)
 
-	podLabels := commonLabels(z.Name, ComponentFrontend)
-
 	env := append(db.FrontendEnvVars(), ServerEnvVarsForFrontend(z)...)
 	if spec != nil {
 		env = append(env, spec.Env...)
@@ -46,37 +43,27 @@ func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deplo
 	// no-op when unset or on older versions). See telemetry.go.
 	env = append(env, FrontendTelemetryEnvs(z)...)
 
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      FrontendName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    podLabels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(z.Name, ComponentFrontend)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
-				Spec: corev1.PodSpec{
-					SecurityContext: PodSecurityContext(),
-					Containers: []corev1.Container{{
-						Name:            "zabbix-frontend",
-						Image:           ImageFor("web-nginx-pgsql", z.Spec.Version, frontendImage(spec)),
-						ImagePullPolicy: pullPolicy(frontendImage(spec)),
-						Env:             env,
-						Ports: []corev1.ContainerPort{
-							{Name: portNameHTTP, ContainerPort: FrontendPort},
-						},
-						ReadinessProbe: httpProbe("/"),
-						LivenessProbe:  httpProbe("/"),
-						Resources:      frontendResources(spec),
-						VolumeMounts:   TelemetryVolumeMounts(z),
-					}},
-					Volumes: TelemetrySecretVolumes(z),
-				},
+	return deployment(workloadScaffold{
+		name:      FrontendName(z.Name),
+		namespace: z.Namespace,
+		prefix:    z.Name,
+		component: ComponentFrontend,
+		replicas:  replicas,
+		containers: []corev1.Container{{
+			Name:            "zabbix-frontend",
+			Image:           ImageFor("web-nginx-pgsql", z.Spec.Version, frontendImage(spec)),
+			ImagePullPolicy: pullPolicy(frontendImage(spec)),
+			Env:             env,
+			Ports: []corev1.ContainerPort{
+				{Name: portNameHTTP, ContainerPort: FrontendPort},
 			},
-		},
-	}
+			ReadinessProbe: httpProbe("/"),
+			LivenessProbe:  httpProbe("/"),
+			Resources:      frontendResources(spec),
+			VolumeMounts:   TelemetryVolumeMounts(z),
+		}},
+		volumes: TelemetrySecretVolumes(z),
+	})
 }
 
 // FrontendService builds the frontend Service (the user-facing entry).
@@ -84,7 +71,7 @@ func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deplo
 // exposure and add Service annotations (e.g. cloud LB settings). Ingress
 // routing on top stays user-managed.
 func FrontendService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
-	svcType := corev1.ServiceTypeClusterIP
+	var svcType corev1.ServiceType
 	var annotations map[string]string
 	if spec := z.Spec.Frontend; spec != nil && spec.Service != nil {
 		if spec.Service.Type != nil {
@@ -93,23 +80,19 @@ func FrontendService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 		annotations = spec.Service.Annotations
 	}
 
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        FrontendName(z.Name),
-			Namespace:   z.Namespace,
-			Labels:      commonLabels(z.Name, ComponentFrontend),
-			Annotations: annotations,
-		},
-		Spec: corev1.ServiceSpec{
-			Type:     svcType,
-			Selector: selectorLabels(z.Name, ComponentFrontend),
-			Ports: []corev1.ServicePort{{
-				Name:       portNameHTTP,
-				Port:       frontendServicePort,
-				TargetPort: intstr.FromInt32(FrontendPort),
-			}},
-		},
-	}
+	return service(serviceScaffold{
+		name:        FrontendName(z.Name),
+		namespace:   z.Namespace,
+		prefix:      z.Name,
+		component:   ComponentFrontend,
+		svcType:     svcType,
+		annotations: annotations,
+		ports: []corev1.ServicePort{{
+			Name:       portNameHTTP,
+			Port:       frontendServicePort,
+			TargetPort: intstr.FromInt32(FrontendPort),
+		}},
+	})
 }
 
 // WebServiceDeployment builds the Zabbix web service Deployment (used by
@@ -119,55 +102,38 @@ func WebServiceDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 	spec := z.Spec.WebService
 	replicas := WebServiceReplicas(z)
 
-	podLabels := commonLabels(z.Name, ComponentWebService)
-
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      WebServiceName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    podLabels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(z.Name, ComponentWebService)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
-				Spec: corev1.PodSpec{
-					SecurityContext: PodSecurityContext(),
-					Containers: []corev1.Container{{
-						Name:            "zabbix-web-service",
-						Image:           ImageFor("web-service", z.Spec.Version, webServiceImage(spec)),
-						ImagePullPolicy: pullPolicy(webServiceImage(spec)),
-						Ports: []corev1.ContainerPort{
-							{Name: portNameHTTP, ContainerPort: WebServicePort},
-						},
-						ReadinessProbe: tcpProbe(WebServicePort),
-						Resources:      webServiceResources(spec),
-					}},
-				},
+	return deployment(workloadScaffold{
+		name:      WebServiceName(z.Name),
+		namespace: z.Namespace,
+		prefix:    z.Name,
+		component: ComponentWebService,
+		replicas:  replicas,
+		containers: []corev1.Container{{
+			Name:            "zabbix-web-service",
+			Image:           ImageFor("web-service", z.Spec.Version, webServiceImage(spec)),
+			ImagePullPolicy: pullPolicy(webServiceImage(spec)),
+			Ports: []corev1.ContainerPort{
+				{Name: portNameHTTP, ContainerPort: WebServicePort},
 			},
-		},
-	}
+			ReadinessProbe: tcpProbe(WebServicePort),
+			Resources:      webServiceResources(spec),
+		}},
+	})
 }
 
 // WebServiceService builds the Service fronting the web service.
 func WebServiceService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      WebServiceName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    commonLabels(z.Name, ComponentWebService),
-		},
-		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeClusterIP,
-			Selector: selectorLabels(z.Name, ComponentWebService),
-			Ports: []corev1.ServicePort{{
-				Name:       portNameHTTP,
-				Port:       WebServicePort,
-				TargetPort: intstr.FromInt32(WebServicePort),
-			}},
-		},
-	}
+	return service(serviceScaffold{
+		name:      WebServiceName(z.Name),
+		namespace: z.Namespace,
+		prefix:    z.Name,
+		component: ComponentWebService,
+		ports: []corev1.ServicePort{{
+			Name:       portNameHTTP,
+			Port:       WebServicePort,
+			TargetPort: intstr.FromInt32(WebServicePort),
+		}},
+	})
 }
 
 func frontendImage(spec *zabbixv1alpha1.FrontendSpec) *zabbixv1alpha1.ImageSpec {
