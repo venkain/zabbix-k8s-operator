@@ -25,8 +25,8 @@ import (
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 )
 
-// portNameHTTP names the frontend and web service HTTP ports (container
-// and service port lists).
+// portNameHTTP names every plain-HTTP service port (frontend, web
+// service, KSM, ClickHouse SQL) in container and service port lists.
 const portNameHTTP = "http"
 
 // FrontendDeployment builds the Zabbix frontend (nginx) Deployment. The
@@ -34,10 +34,7 @@ const portNameHTTP = "http"
 // server through the active-node Service.
 func FrontendDeployment(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv) *appsv1.Deployment {
 	spec := z.Spec.Frontend
-	replicas := int32(1)
-	if spec != nil && spec.Replicas != nil {
-		replicas = *spec.Replicas
-	}
+	replicas := FrontendReplicas(z)
 
 	podLabels := commonLabels(z.Name, ComponentFrontend)
 
@@ -108,7 +105,7 @@ func FrontendService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 			Selector: selectorLabels(z.Name, ComponentFrontend),
 			Ports: []corev1.ServicePort{{
 				Name:       portNameHTTP,
-				Port:       80,
+				Port:       frontendServicePort,
 				TargetPort: intstr.FromInt32(FrontendPort),
 			}},
 		},
@@ -120,10 +117,7 @@ func FrontendService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 // WebServiceURL config fragment built by WebServiceConfigFragment.
 func WebServiceDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 	spec := z.Spec.WebService
-	replicas := int32(1)
-	if spec != nil && spec.Replicas != nil {
-		replicas = *spec.Replicas
-	}
+	replicas := WebServiceReplicas(z)
 
 	podLabels := commonLabels(z.Name, ComponentWebService)
 

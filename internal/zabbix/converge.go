@@ -178,6 +178,24 @@ func ServerReplicas(z *zabbixv1alpha1.Zabbix) int32 {
 	return 1
 }
 
+// FrontendReplicas returns the configured frontend replica count.
+// Optional feature: absent spec means 1.
+func FrontendReplicas(z *zabbixv1alpha1.Zabbix) int32 {
+	if z.Spec.Frontend != nil && z.Spec.Frontend.Replicas != nil {
+		return *z.Spec.Frontend.Replicas
+	}
+	return 1
+}
+
+// WebServiceReplicas returns the configured web service replica count.
+// Optional feature: absent spec means 1.
+func WebServiceReplicas(z *zabbixv1alpha1.Zabbix) int32 {
+	if z.Spec.WebService != nil && z.Spec.WebService.Replicas != nil {
+		return *z.Spec.WebService.Replicas
+	}
+	return 1
+}
+
 // ComponentIsReady reports whether the given deployment has at least the
 // desired number of ready replicas.
 func ComponentIsReady(ctx context.Context, c client.Client, namespace, name string, desired int32) (bool, error) {

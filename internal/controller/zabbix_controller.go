@@ -532,7 +532,7 @@ func (r *ZabbixReconciler) publishComponentReadiness(ctx context.Context, z *zab
 	setCond(&status.Conditions, zabbixv1alpha1.ConditionServerReady, readyCondition(serverReady), "ServerStatefulSet", statefulSetMessage("server", serverReady), z.Generation)
 
 	frontendReady, err := zabbix.ComponentIsReady(ctx, r.Client, z.Namespace,
-		zabbix.FrontendName(z.Name), frontendReplicas(z))
+		zabbix.FrontendName(z.Name), zabbix.FrontendReplicas(z))
 	if err != nil {
 		return false, fmt.Errorf("checking frontend readiness: %w", err)
 	}
@@ -542,7 +542,7 @@ func (r *ZabbixReconciler) publishComponentReadiness(ctx context.Context, z *zab
 
 	if z.Spec.WebService != nil {
 		webServiceReady, err := zabbix.ComponentIsReady(ctx, r.Client, z.Namespace,
-			zabbix.WebServiceName(z.Name), webServiceReplicas(z))
+			zabbix.WebServiceName(z.Name), zabbix.WebServiceReplicas(z))
 		if err != nil {
 			return false, fmt.Errorf("checking web service readiness: %w", err)
 		}
@@ -552,19 +552,10 @@ func (r *ZabbixReconciler) publishComponentReadiness(ctx context.Context, z *zab
 	return componentsReady, nil
 }
 
-func frontendReplicas(z *zabbixv1alpha1.Zabbix) int32 {
-	if z.Spec.Frontend != nil && z.Spec.Frontend.Replicas != nil {
-		return *z.Spec.Frontend.Replicas
-	}
-	return 1
-}
-
-func webServiceReplicas(z *zabbixv1alpha1.Zabbix) int32 {
-	if z.Spec.WebService != nil && z.Spec.WebService.Replicas != nil {
-		return *z.Spec.WebService.Replicas
-	}
-	return 1
-}
+// frontendReplicas and webServiceReplicas are read directly through the
+// shared zabbix.FrontendReplicas / zabbix.WebServiceReplicas helpers so
+// the readiness check always measures the same target the builders
+// converge.
 
 // SetupWithManager sets up the controller with the Manager. Reconciles are
 // triggered by the Zabbix resource and by changes to objects it owns.
