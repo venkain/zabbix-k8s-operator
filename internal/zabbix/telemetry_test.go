@@ -484,7 +484,7 @@ func TestProxyStatefulSetNoAPMByDefault(t *testing.T) {
 			t.Errorf("unexpected %s without apm/telemetryStorage", e.Name)
 		}
 	}
-	if len(proxy.Ports) != 1 || proxy.Ports[0].Name != portNameProxyTrapper {
+	if len(proxy.Ports) != 1 || proxy.Ports[0].Name != portNameTrapper {
 		t.Errorf("ports = %+v, want only the trapper port", proxy.Ports)
 	}
 }

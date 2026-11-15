@@ -39,8 +39,7 @@ const (
 	envProxyMode  = "ZBX_PROXYMODE"
 	envNodeNameDB = "ZBX_USE_NODE_NAME_AS_DB_NAME"
 
-	portNameProxyTrapper = "zabbix-trapper"
-	proxyContainerName   = "zabbix-proxy"
+	proxyContainerName = "zabbix-proxy"
 )
 
 // DesiredProxyReplicas returns the configured group member count (1 by
@@ -112,7 +111,7 @@ func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *za
 			// no-op otherwise). See telemetry.go for the contract.
 		},
 		Ports: []corev1.ContainerPort{
-			{Name: portNameProxyTrapper, ContainerPort: ProxyPort},
+			{Name: portNameTrapper, ContainerPort: ProxyPort},
 		},
 		ReadinessProbe: proxyReadyProbe(),
 		LivenessProbe:  proxyLivenessProbe(),
@@ -165,7 +164,7 @@ func ProxyHeadlessService(pg *zabbixv1alpha1.ZabbixProxyGroup) *corev1.Service {
 			ClusterIP: "None",
 			Selector:  selectorLabels(pg.Name, ComponentProxy),
 			Ports: []corev1.ServicePort{{
-				Name:       portNameProxyTrapper,
+				Name:       portNameTrapper,
 				Port:       ProxyPort,
 				TargetPort: intstr.FromInt32(ProxyPort),
 			}},

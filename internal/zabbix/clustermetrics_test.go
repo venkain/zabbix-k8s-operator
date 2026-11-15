@@ -79,7 +79,7 @@ func TestKubeStateMetricsDiscoveryContract(t *testing.T) {
 	if !strings.HasSuffix(svc.Name, "kube-state-metrics") {
 		t.Errorf("service name %q must end with kube-state-metrics (template discovery regex)", svc.Name)
 	}
-	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Name != portNameClickhouseSQL {
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Name != portNameHTTP {
 		t.Fatalf("service ports = %+v, want one port named http", svc.Spec.Ports)
 	}
 	if svc.Spec.Ports[0].Port != KubeStateMetricsPort {

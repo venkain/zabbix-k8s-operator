@@ -43,7 +43,6 @@ const (
 	clickhouseDefaultTag  = "26.8"
 	clickhouseHTTPPort    = int32(8123)
 	clickhouseNativePort  = int32(9000)
-	portNameClickhouseSQL = "http"
 	portNameClickhouseNAT = "native"
 
 	// clickhouseAuthUsername is the fixed Zabbix login the managed
@@ -151,7 +150,7 @@ func ClickHouseStatefulSet(z *zabbixv1alpha1.Zabbix) *appsv1.StatefulSet {
 				ClickHouseAuthSecretName(z.Name), clickhousePasswordKey)},
 		},
 		Ports: []corev1.ContainerPort{
-			{Name: portNameClickhouseSQL, ContainerPort: clickhouseHTTPPort},
+			{Name: portNameHTTP, ContainerPort: clickhouseHTTPPort},
 			{Name: portNameClickhouseNAT, ContainerPort: clickhouseNativePort},
 		},
 		// /ping answers "Ok." on the HTTP interface once the server
@@ -223,7 +222,7 @@ func ClickHouseService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: selectorLabels(z.Name, ComponentClickHouse),
 			Ports: []corev1.ServicePort{
-				{Name: portNameClickhouseSQL, Port: clickhouseHTTPPort, TargetPort: intstr.FromInt32(clickhouseHTTPPort)},
+				{Name: portNameHTTP, Port: clickhouseHTTPPort, TargetPort: intstr.FromInt32(clickhouseHTTPPort)},
 				{Name: portNameClickhouseNAT, Port: clickhouseNativePort, TargetPort: intstr.FromInt32(clickhouseNativePort)},
 			},
 		},

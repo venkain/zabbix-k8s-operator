@@ -105,13 +105,13 @@ func (r *ZabbixProxyGroupReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	var z zabbixv1alpha1.Zabbix
 	if err := r.Get(ctx, client.ObjectKey{Namespace: pg.Namespace, Name: pg.Spec.ServerRef}, &z); err != nil {
 		if apierrors.IsNotFound(err) {
-			setPGCond(status, zabbixv1alpha1.ConditionProxyGroupServerResolved, "False",
+			setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupServerResolved, "False",
 				"ServerRefUnresolved", fmt.Sprintf("referenced Zabbix resource %q does not exist (yet)", pg.Spec.ServerRef), pg.Generation)
 			return persistProxyGroupStatus(ctx, r.Client, &pg, *status, proxyGroupRefRetryDelay)
 		}
 		return ctrl.Result{}, fmt.Errorf("getting referenced Zabbix %q: %w", pg.Spec.ServerRef, err)
 	}
-	setPGCond(status, zabbixv1alpha1.ConditionProxyGroupServerResolved, "True",
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupServerResolved, "True",
 		"ServerRefResolved", fmt.Sprintf("referenced Zabbix resource %q resolved", pg.Spec.ServerRef), pg.Generation)
 
 	// 2. Finalizer comes first: once the API maintenance below has
@@ -173,12 +173,8 @@ func (r *ZabbixProxyGroupReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("checking proxy group readiness: %w", err)
 	}
-	readyMsg := "proxy group statefulset is ready"
-	if !ready {
-		readyMsg = "proxy group statefulset is not ready yet"
-	}
-	setPGCond(status, zabbixv1alpha1.ConditionProxyGroupReady, readyCondition(ready),
-		"ProxyStatefulSet", readyMsg, pg.Generation)
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupReady, readyCondition(ready),
+		"ProxyStatefulSet", statefulSetMessage("proxy group", ready), pg.Generation)
 
 	// 5. API maintenance: group object and per-member proxy records must
 	// exist server-side for the daemons to register into the group. The
@@ -198,7 +194,7 @@ func (r *ZabbixProxyGroupReconciler) Reconcile(ctx context.Context, req ctrl.Req
 func (r *ZabbixProxyGroupReconciler) maintainProxyGroup(ctx context.Context, pg *zabbixv1alpha1.ZabbixProxyGroup, status *zabbixv1alpha1.ZabbixProxyGroupStatus, z *zabbixv1alpha1.Zabbix) error {
 	token, err := apiToken(ctx, r.Client, z)
 	if err != nil {
-		setPGCond(status, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
 			"TokenUnresolved", err.Error(), pg.Generation)
 		return err
 	}
@@ -206,7 +202,7 @@ func (r *ZabbixProxyGroupReconciler) maintainProxyGroup(ctx context.Context, pg 
 
 	group, err := zabbix.FetchProxyGroup(ctx, r.HTTP, endpoint, token, pg.Spec.GroupName)
 	if err != nil {
-		setPGCond(status, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
 			"APIUnreachable", err.Error(), pg.Generation)
 		return err
 	}
@@ -216,14 +212,14 @@ func (r *ZabbixProxyGroupReconciler) maintainProxyGroup(ctx context.Context, pg 
 	case group == nil:
 		id, err := zabbix.CreateProxyGroup(ctx, r.HTTP, endpoint, token, pg.Spec.GroupName, failoverDelay, minOnline)
 		if err != nil {
-			setPGCond(status, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
+			setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
 				"GroupCreateFailed", err.Error(), pg.Generation)
 			return err
 		}
 		group = &zabbix.ProxyGroup{ID: id, Name: pg.Spec.GroupName}
 	case group.FailoverDelay != failoverDelay || group.MinOnline != minOnline:
 		if err := zabbix.UpdateProxyGroup(ctx, r.HTTP, endpoint, token, group.ID, failoverDelay, minOnline); err != nil {
-			setPGCond(status, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
+			setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
 				"GroupUpdateFailed", err.Error(), pg.Generation)
 			return err
 		}
@@ -231,20 +227,20 @@ func (r *ZabbixProxyGroupReconciler) maintainProxyGroup(ctx context.Context, pg 
 
 	members, err := zabbix.FetchGroupProxies(ctx, r.HTTP, endpoint, token, group.ID)
 	if err != nil {
-		setPGCond(status, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
 			"APIUnreachable", err.Error(), pg.Generation)
 		return err
 	}
 
 	syncErr := syncGroupMembers(ctx, r, endpoint, token, group.ID, pg, members)
 	if syncErr != nil {
-		setPGCond(status, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupAPIReady, "False",
 			"MembersNotSynced", syncErr.Error(), pg.Generation)
 		return syncErr
 	}
 
 	state := string(group.State)
-	setPGCond(status, zabbixv1alpha1.ConditionProxyGroupAPIReady, "True",
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionProxyGroupAPIReady, "True",
 		"GroupInSync", fmt.Sprintf("group %q managed (state %s)", pg.Spec.GroupName, state), pg.Generation)
 	status.GroupState = state
 	// Per-member availability: the official online criterion is "last
@@ -286,7 +282,7 @@ func (r *ZabbixProxyGroupReconciler) ensureAPMRegistration(ctx context.Context, 
 		// source without the telemetry storage. Hold off (memo and any
 		// earlier registration stay untouched) until the storage
 		// appears.
-		setPGCond(status, zabbixv1alpha1.ConditionAPMRegistered, "False",
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionAPMRegistered, "False",
 			"TelemetryStorageUnresolved",
 			"spec.apm needs telemetryStorage.clickhouse on the referenced Zabbix resource", pg.Generation)
 		return
@@ -335,7 +331,7 @@ func (r *ZabbixProxyGroupReconciler) ensureAPMRegistration(ctx context.Context, 
 	if len(updates) > 0 {
 		if err := zabbix.UpdateProxiesAPM(ctx, r.HTTP, endpoint, token, updates); err != nil {
 			log.Error(err, "enabling per-proxy APM data collection failed")
-			setPGCond(status, zabbixv1alpha1.ConditionAPMRegistered, "False",
+			setCond(&status.Conditions, zabbixv1alpha1.ConditionAPMRegistered, "False",
 				"APMEnableFailed", err.Error(), pg.Generation)
 			return
 		}
@@ -345,7 +341,7 @@ func (r *ZabbixProxyGroupReconciler) ensureAPMRegistration(ctx context.Context, 
 		Members:              desiredNames,
 		MaxMessagesPerSecond: quota,
 	}
-	setPGCond(status, zabbixv1alpha1.ConditionAPMRegistered, "True", "APMRegistered",
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionAPMRegistered, "True", "APMRegistered",
 		fmt.Sprintf("OTLP data collection enabled for %d member(s) (quota %d msg/s)",
 			len(desiredNames), quota), pg.Generation)
 }
@@ -374,25 +370,13 @@ func (r *ZabbixProxyGroupReconciler) disableAPMRegistration(ctx context.Context,
 	if len(updates) > 0 {
 		if err := zabbix.UpdateProxiesAPM(ctx, r.HTTP, endpoint, token, updates); err != nil {
 			logf.FromContext(ctx).Error(err, "disabling per-proxy APM data collection failed")
-			setPGCond(status, zabbixv1alpha1.ConditionAPMRegistered, "False",
+			setCond(&status.Conditions, zabbixv1alpha1.ConditionAPMRegistered, "False",
 				"APMDisableFailed", err.Error(), pg.Generation)
 			return
 		}
 	}
 	status.APM = nil
-	dropPGCondition(status, zabbixv1alpha1.ConditionAPMRegistered)
-}
-
-// dropPGCondition removes one condition type from the proxy group
-// status — used when the feature it tracks is switched off.
-func dropPGCondition(status *zabbixv1alpha1.ZabbixProxyGroupStatus, t zabbixv1alpha1.ProxyGroupConditionType) {
-	kept := make([]metav1.Condition, 0, len(status.Conditions))
-	for _, c := range status.Conditions {
-		if c.Type != string(t) {
-			kept = append(kept, c)
-		}
-	}
-	status.Conditions = kept
+	dropCondition(&status.Conditions, zabbixv1alpha1.ConditionAPMRegistered)
 }
 
 // syncGroupMembers converges the member proxy records. Desired members
@@ -505,10 +489,6 @@ func (r *ZabbixProxyGroupReconciler) deleteServerSideGroup(ctx context.Context, 
 		}
 	}
 	return zabbix.DeleteProxyGroup(ctx, r.HTTP, endpoint, token, group.ID)
-}
-
-func setPGCond(status *zabbixv1alpha1.ZabbixProxyGroupStatus, t zabbixv1alpha1.ProxyGroupConditionType, s metav1.ConditionStatus, reason, message string, generation int64) {
-	zabbix.SetCondition(&status.Conditions, string(t), s, reason, message, generation)
 }
 
 // persistProxyGroupStatus writes the given status only when it differs

@@ -167,7 +167,7 @@ func TestClickHouseStatefulSet(t *testing.T) {
 	for _, p := range c.Ports {
 		ports[p.Name] = p.ContainerPort
 	}
-	if ports[portNameClickhouseSQL] != 8123 || ports[portNameClickhouseNAT] != 9000 {
+	if ports[portNameHTTP] != 8123 || ports[portNameClickhouseNAT] != 9000 {
 		t.Errorf("ports = %v", ports)
 	}
 	if c.ReadinessProbe == nil || c.ReadinessProbe.HTTPGet == nil ||
@@ -240,7 +240,7 @@ func TestClickHouseService(t *testing.T) {
 	if len(svc.Spec.Ports) != 2 {
 		t.Fatalf("ports = %+v", svc.Spec.Ports)
 	}
-	if svc.Spec.Ports[0].Name != portNameClickhouseSQL || svc.Spec.Ports[0].Port != 8123 {
+	if svc.Spec.Ports[0].Name != portNameHTTP || svc.Spec.Ports[0].Port != 8123 {
 		t.Errorf("http port = %+v", svc.Spec.Ports[0])
 	}
 	if svc.Spec.Ports[1].Name != "native" || svc.Spec.Ports[1].Port != 9000 {

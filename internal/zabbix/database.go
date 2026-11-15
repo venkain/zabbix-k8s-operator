@@ -66,16 +66,11 @@ func (d *DatabaseEnv) ServerEnvVars() []corev1.EnvVar {
 	}
 }
 
-// FrontendEnvVars renders the database environment for the frontend
-// (official image variable names for zabbix-web-nginx-pgsql).
+// FrontendEnvVars renders the database environment for the frontend.
+// The zabbix-web-nginx-pgsql image uses the same official variable
+// names as the server/proxy images, so this is the same slice.
 func (d *DatabaseEnv) FrontendEnvVars() []corev1.EnvVar {
-	return []corev1.EnvVar{
-		{Name: "DB_SERVER_HOST", Value: d.Host},
-		{Name: "DB_SERVER_PORT", Value: d.Port},
-		{Name: "POSTGRES_USER", Value: d.User},
-		{Name: "POSTGRES_PASSWORD", Value: d.Password},
-		{Name: "POSTGRES_DB", Value: d.DBName},
-	}
+	return d.ServerEnvVars()
 }
 
 // ResolveDatabase reads the connection details selected by spec.database:
