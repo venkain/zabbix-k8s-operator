@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -384,22 +383,17 @@ func APMVolumeMounts(pg *zabbixv1alpha1.ZabbixProxyGroup) []corev1.VolumeMount {
 // exporters at this address).
 func ProxyAPMService(pg *zabbixv1alpha1.ZabbixProxyGroup) *corev1.Service {
 	port := APMListenPort(pg)
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ProxyName(pg.Name) + "-apm",
-			Namespace: pg.Namespace,
-			Labels:    commonLabels(pg.Name, ComponentProxy),
-		},
-		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeClusterIP,
-			Selector: selectorLabels(pg.Name, ComponentProxy),
-			Ports: []corev1.ServicePort{{
-				Name:       otlpPortName,
-				Port:       port,
-				TargetPort: intstr.FromInt32(port),
-			}},
-		},
-	}
+	return service(serviceScaffold{
+		name:      ProxyName(pg.Name) + "-apm",
+		namespace: pg.Namespace,
+		prefix:    pg.Name,
+		component: ComponentProxy,
+		ports: []corev1.ServicePort{{
+			Name:       otlpPortName,
+			Port:       port,
+			TargetPort: intstr.FromInt32(port),
+		}},
+	})
 }
 
 // secretMountFile resolves a Secret key inside a mounted secret volume,

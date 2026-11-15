@@ -494,6 +494,15 @@ func (r *ZabbixProxyGroupReconciler) deleteServerSideGroup(ctx context.Context, 
 // persistProxyGroupStatus writes the given status only when it differs
 // from the stored one (no-op writes would hot-loop the controller), with
 // one conflict-retry on a fresh read.
+//
+// Unlike persistStatus (Zabbix controller), a doubly-conflicted write is
+// dropped here rather than reported as an error: the proxy group status
+// is recomputed from spec + live state every reconcile with
+// level-triggered memo logic (an APM memo whose generation lags is
+// re-ensured), so a dropped write self-heals on the next pass. The
+// Zabbix writer must error because its status carries cleanup-controlling
+// records (cluster-metrics placement) whose loss was proven
+// catastrophic — see its comment and the placement-record fix.
 func persistProxyGroupStatus(ctx context.Context, c client.Client, pg *zabbixv1alpha1.ZabbixProxyGroup, status zabbixv1alpha1.ZabbixProxyGroupStatus, requeue time.Duration) (ctrl.Result, error) {
 	if reflect.DeepEqual(pg.Status, status) {
 		return ctrl.Result{RequeueAfter: requeue}, nil

@@ -120,8 +120,6 @@ func ClickHouseAuthSecretName(instance string) string {
 // replica a minAvailable=1 budget would block node drains entirely.
 func ClickHouseStatefulSet(z *zabbixv1alpha1.Zabbix) *appsv1.StatefulSet {
 	managed := z.Spec.TelemetryStorage.ClickHouse.Managed
-	podLabels := commonLabels(z.Name, ComponentClickHouse)
-	replicas := int32(1) // single node by design (see the doc comment)
 
 	image := clickhouseImageRepo + ":" + clickhouseDefaultTag
 	if managed.Image != nil {
@@ -174,37 +172,27 @@ func ClickHouseStatefulSet(z *zabbixv1alpha1.Zabbix) *appsv1.StatefulSet {
 		},
 	}
 
-	return &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ClickHouseName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    podLabels,
-		},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas:    &replicas,
-			ServiceName: ClickHouseName(z.Name),
-			Selector:    &metav1.LabelSelector{MatchLabels: selectorLabels(z.Name, ComponentClickHouse)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
-				Spec: corev1.PodSpec{
-					SecurityContext: PodSecurityContext(),
-					Containers:      []corev1.Container{container},
-				},
-			},
-			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
-				ObjectMeta: metav1.ObjectMeta{Name: clickhouseDataVolume},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: storage,
-						},
+	return statefulSet(workloadScaffold{
+		name:        ClickHouseName(z.Name),
+		namespace:   z.Namespace,
+		prefix:      z.Name,
+		component:   ComponentClickHouse,
+		replicas:    1,
+		serviceName: ClickHouseName(z.Name),
+		containers:  []corev1.Container{container},
+		claims: []corev1.PersistentVolumeClaim{{
+			ObjectMeta: metav1.ObjectMeta{Name: clickhouseDataVolume},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: storage,
 					},
-					StorageClassName: strPtrIfSet(managed.StorageClassName),
 				},
-			}},
-		},
-	}
+				StorageClassName: strPtrIfSet(managed.StorageClassName),
+			},
+		}},
+	})
 }
 
 // ClickHouseService builds the ClusterIP Service fronting the managed
@@ -212,21 +200,16 @@ func ClickHouseStatefulSet(z *zabbixv1alpha1.Zabbix) *appsv1.StatefulSet {
 // points at, the native port (9000) is exposed for ad-hoc
 // clickhouse-client access from inside the cluster.
 func ClickHouseService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ClickHouseName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    commonLabels(z.Name, ComponentClickHouse),
+	return service(serviceScaffold{
+		name:      ClickHouseName(z.Name),
+		namespace: z.Namespace,
+		prefix:    z.Name,
+		component: ComponentClickHouse,
+		ports: []corev1.ServicePort{
+			{Name: portNameHTTP, Port: clickhouseHTTPPort, TargetPort: intstr.FromInt32(clickhouseHTTPPort)},
+			{Name: portNameClickhouseNAT, Port: clickhouseNativePort, TargetPort: intstr.FromInt32(clickhouseNativePort)},
 		},
-		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeClusterIP,
-			Selector: selectorLabels(z.Name, ComponentClickHouse),
-			Ports: []corev1.ServicePort{
-				{Name: portNameHTTP, Port: clickhouseHTTPPort, TargetPort: intstr.FromInt32(clickhouseHTTPPort)},
-				{Name: portNameClickhouseNAT, Port: clickhouseNativePort, TargetPort: intstr.FromInt32(clickhouseNativePort)},
-			},
-		},
-	}
+	})
 }
 
 // ClickHouseAuthSecret builds the operator-generated credentials Secret

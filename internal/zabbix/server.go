@@ -21,7 +21,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -109,84 +108,66 @@ func serverStatefulSet(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv, replicas int32
 		containers = append(containers, agentSidecar(z, spec.Agent))
 	}
 
-	return &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ServerName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    podLabels,
-		},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas: &replicas,
-			// The governing service does not need per-pod DNS (traffic
-			// reaches the server through the -active Service), but the
-			// StatefulSet requires a service name.
-			ServiceName: ServerName(z.Name),
-			// OrderedReady (default): predecessors are Running and Ready
-			// before the next ordinal starts. This is the standalone→HA
-			// sequencing guarantee — the first pod re-registers the
-			// registry entry (the clean stop of the replaced pod marks
-			// the standalone entry inactive), and only then the next
-			// ordinal joins as standby.
-			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(z.Name, ComponentServer)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
-				Spec: corev1.PodSpec{
-					SecurityContext: PodSecurityContext(),
-					Containers:      containers,
-					Volumes:         TelemetrySecretVolumes(z),
-				},
-			},
-		},
+	// The governing service does not need per-pod DNS (traffic reaches
+	// the server through the -active Service), but the StatefulSet
+	// requires a service name.
+	//
+	// The scaffold keeps OrderedReady (default): predecessors are
+	// Running and Ready before the next ordinal starts. This is the
+	// standalone→HA sequencing guarantee — the first pod re-registers
+	// the registry entry (the clean stop of the replaced pod marks the
+	// standalone entry inactive), and only then the next ordinal joins
+	// as standby.
+	extra := map[string]string{}
+	if !haIdentity {
+		extra[HARoleLabel] = HARoleActive
 	}
+	return statefulSet(workloadScaffold{
+		name:        ServerName(z.Name),
+		namespace:   z.Namespace,
+		prefix:      z.Name,
+		component:   ComponentServer,
+		replicas:    replicas,
+		serviceName: ServerName(z.Name),
+		extraLabels: extra,
+		containers:  containers,
+		volumes:     TelemetrySecretVolumes(z),
+	})
 }
 
 // ServerService builds the Service fronting all server pods (used by
 // proxies and agents that speak to any node... in practice trapper
 // traffic goes to the active node; this Service selects every pod).
 func ServerService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ServerName(z.Name),
-			Namespace: z.Namespace,
-			Labels:    commonLabels(z.Name, ComponentServer),
-		},
-		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeClusterIP,
-			Selector: selectorLabels(z.Name, ComponentServer),
-			Ports: []corev1.ServicePort{{
-				Name:       portNameTrapper,
-				Port:       ServerPort,
-				TargetPort: intstr.FromInt32(ServerPort),
-			}},
-		},
-	}
+	return service(serviceScaffold{
+		name:      ServerName(z.Name),
+		namespace: z.Namespace,
+		prefix:    z.Name,
+		component: ComponentServer,
+		ports: []corev1.ServicePort{{
+			Name:       portNameTrapper,
+			Port:       ServerPort,
+			TargetPort: intstr.FromInt32(ServerPort),
+		}},
+	})
 }
 
 // ActiveServerService builds the Service that routes ONLY to the active
 // HA node (via the operator-maintained HARoleLabel). When the server runs
 // standalone (replicas=1) this equals the plain server Service behavior.
 func ActiveServerService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
-	labels := commonLabels(z.Name, ComponentServer)
-	labels[HARoleLabel] = HARoleActive
-
-	sel := selectorLabels(z.Name, ComponentServer)
-	sel[HARoleLabel] = HARoleActive
-
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ServerName(z.Name) + "-active",
-			Namespace: z.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: sel,
-			Ports: []corev1.ServicePort{{
-				Name:       portNameTrapper,
-				Port:       ServerPort,
-				TargetPort: intstr.FromInt32(ServerPort),
-			}},
-		},
-	}
+	return service(serviceScaffold{
+		name:      ServerName(z.Name) + "-active",
+		namespace: z.Namespace,
+		prefix:    z.Name,
+		component: ComponentServer,
+		ports: []corev1.ServicePort{{
+			Name:       portNameTrapper,
+			Port:       ServerPort,
+			TargetPort: intstr.FromInt32(ServerPort),
+		}},
+		extraLabels: map[string]string{HARoleLabel: HARoleActive},
+	})
 }
 
 // ServerEnvVarsForFrontend returns the env the frontend needs to reach the

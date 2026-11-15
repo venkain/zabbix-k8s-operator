@@ -153,61 +153,43 @@ func KubeStateMetricsDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 	if spec != nil {
 		resources = spec.Resources
 	}
-	podLabels := commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics)
-	replicas := int32(1)
-
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
-			Namespace: clusterMetricsNamespaceOf(z),
-			Labels:    podLabels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
-				Spec: corev1.PodSpec{
-					SecurityContext:    PodSecurityContext(),
-					ServiceAccountName: KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
-					Containers: []corev1.Container{{
-						Name:            "kube-state-metrics",
-						Image:           kubeStateMetricsImage(spec),
-						ImagePullPolicy: corev1.PullIfNotPresent,
-						SecurityContext: RestrictedSecurityContext(),
-						Ports: []corev1.ContainerPort{
-							{Name: portNameHTTP, ContainerPort: KubeStateMetricsPort},
-						},
-						ReadinessProbe: httpProbe("/healthz"),
-						LivenessProbe:  httpProbe("/healthz"),
-						Resources:      resources,
-					}},
-				},
+	return deployment(workloadScaffold{
+		name:               KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
+		namespace:          clusterMetricsNamespaceOf(z),
+		prefix:             clusterMetricsNamePrefixOf(z),
+		component:          ComponentClusterMetrics,
+		replicas:           1,
+		serviceAccountName: KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
+		containers: []corev1.Container{{
+			Name:            "kube-state-metrics",
+			Image:           kubeStateMetricsImage(spec),
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			SecurityContext: RestrictedSecurityContext(),
+			Ports: []corev1.ContainerPort{
+				{Name: portNameHTTP, ContainerPort: KubeStateMetricsPort},
 			},
-		},
-	}
+			ReadinessProbe: httpProbe("/healthz"),
+			LivenessProbe:  httpProbe("/healthz"),
+			Resources:      resources,
+		}},
+	})
 }
 
 // KubeStateMetricsService builds the KSM Service. The NAME is the
 // discovery contract (must end with "kube-state-metrics"); the port
 // NAME is the other half of the contract ("http").
 func KubeStateMetricsService(z *zabbixv1alpha1.Zabbix) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
-			Namespace: clusterMetricsNamespaceOf(z),
-			Labels:    commonLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
-		},
-		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeClusterIP,
-			Selector: selectorLabels(clusterMetricsNamePrefixOf(z), ComponentClusterMetrics),
-			Ports: []corev1.ServicePort{{
-				Name:       portNameHTTP,
-				Port:       KubeStateMetricsPort,
-				TargetPort: intstr.FromString(portNameHTTP),
-			}},
-		},
-	}
+	return service(serviceScaffold{
+		name:      KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
+		namespace: clusterMetricsNamespaceOf(z),
+		prefix:    clusterMetricsNamePrefixOf(z),
+		component: ComponentClusterMetrics,
+		ports: []corev1.ServicePort{{
+			Name:       portNameHTTP,
+			Port:       KubeStateMetricsPort,
+			TargetPort: intstr.FromString(portNameHTTP),
+		}},
+	})
 }
 
 // KubeStateMetricsServiceAccount builds the service account the

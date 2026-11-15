@@ -23,7 +23,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
@@ -77,7 +76,6 @@ func ProxyRecordAddress(instance string, ordinal int32, namespace string) string
 // server-side, and the per-ordinal headless DNS keeps the registered
 // local_address valid.
 func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *zabbixv1alpha1.Zabbix) *appsv1.StatefulSet {
-	podLabels := commonLabels(pg.Name, ComponentProxy)
 
 	proxyContainer := corev1.Container{
 		Name:            proxyContainerName,
@@ -128,48 +126,34 @@ func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *za
 	}
 	proxyContainer.VolumeMounts = append(TelemetryVolumeMounts(z), APMVolumeMounts(pg)...)
 
-	return &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ProxyName(pg.Name),
-			Namespace: pg.Namespace,
-			Labels:    podLabels,
-		},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas:    &replicas,
-			ServiceName: ProxyName(pg.Name),
-			Selector:    &metav1.LabelSelector{MatchLabels: selectorLabels(pg.Name, ComponentProxy)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
-				Spec: corev1.PodSpec{
-					SecurityContext: PodSecurityContext(),
-					Containers:      []corev1.Container{proxyContainer},
-					Volumes:         append(TelemetrySecretVolumes(z), APMSecretVolumes(pg)...),
-				},
-			},
-		},
-	}
+	return statefulSet(workloadScaffold{
+		name:        ProxyName(pg.Name),
+		namespace:   pg.Namespace,
+		prefix:      pg.Name,
+		component:   ComponentProxy,
+		replicas:    replicas,
+		serviceName: ProxyName(pg.Name),
+		containers:  []corev1.Container{proxyContainer},
+		volumes:     append(TelemetrySecretVolumes(z), APMSecretVolumes(pg)...),
+	})
 }
 
 // ProxyHeadlessService is the governing Service of the member StatefulSet.
 // headless — not a routed frontend: its only job is per-ordinal pod DNS
 // (the member local_addresses) plus the identity the StatefulSet requires.
 func ProxyHeadlessService(pg *zabbixv1alpha1.ZabbixProxyGroup) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ProxyName(pg.Name),
-			Namespace: pg.Namespace,
-			Labels:    commonLabels(pg.Name, ComponentProxy),
-		},
-		Spec: corev1.ServiceSpec{
-			ClusterIP: "None",
-			Selector:  selectorLabels(pg.Name, ComponentProxy),
-			Ports: []corev1.ServicePort{{
-				Name:       portNameTrapper,
-				Port:       ProxyPort,
-				TargetPort: intstr.FromInt32(ProxyPort),
-			}},
-		},
-	}
+	return service(serviceScaffold{
+		name:      ProxyName(pg.Name),
+		namespace: pg.Namespace,
+		prefix:    pg.Name,
+		component: ComponentProxy,
+		headless:  true,
+		ports: []corev1.ServicePort{{
+			Name:       portNameTrapper,
+			Port:       ProxyPort,
+			TargetPort: intstr.FromInt32(ProxyPort),
+		}},
+	})
 }
 
 // proxyReadyProbe reports readiness once the proxy daemon runs. pgrep is
