@@ -146,7 +146,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	db, err := zabbix.ResolveDatabase(ctx, r.Client, z.Namespace, z.Spec.Database)
 	if err != nil {
 		log.Error(err, "database resolution failed; requeueing")
-		setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionFalse, "DatabaseUnresolved", err.Error(), z.Generation)
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionFalse, "DatabaseUnresolved", err.Error(), z.Generation)
 		return persistStatus(ctx, r.Client, &z, *status, databaseRetryDelay)
 	}
 
@@ -167,7 +167,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		status.ClusterMetricsHostName = ""
 		status.ClusterMetricsNamespace = ""
 		status.ClusterMetricsNamePrefix = ""
-		dropCondition(status, zabbixv1alpha1.ConditionClusterMetricsReady)
+		dropCondition(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady)
 	}
 
 	// 1b. The cluster-metrics cleanup finalizer comes before the first
@@ -192,7 +192,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, fmt.Errorf("disabling cluster metrics: %w", err)
 		}
 	}
-	setCond(status, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
 		fmt.Sprintf("connection details resolved from secret %s", db.SecretName()), z.Generation)
 
 	// 2. One-time migration: HA node identity needs stable pod names, so
@@ -287,7 +287,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if !componentsReady {
 		readyMsg = "waiting for components to become ready"
 	}
-	setCond(status, zabbixv1alpha1.ConditionReady, readyCondition(componentsReady), "ComponentsReady", readyMsg, z.Generation)
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionReady, readyCondition(componentsReady), "ComponentsReady", readyMsg, z.Generation)
 
 	// 6. HA role maintenance (HA participants only): per-pod labels
 	// follow the ha_node registry so the -active Service routes to the
@@ -529,14 +529,14 @@ func (r *ZabbixReconciler) publishComponentReadiness(ctx context.Context, z *zab
 	if err != nil {
 		return false, fmt.Errorf("checking server readiness: %w", err)
 	}
-	setCond(status, zabbixv1alpha1.ConditionServerReady, readyCondition(serverReady), "ServerStatefulSet", statefulSetMessage("server", serverReady), z.Generation)
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionServerReady, readyCondition(serverReady), "ServerStatefulSet", statefulSetMessage("server", serverReady), z.Generation)
 
 	frontendReady, err := zabbix.ComponentIsReady(ctx, r.Client, z.Namespace,
 		zabbix.FrontendName(z.Name), frontendReplicas(z))
 	if err != nil {
 		return false, fmt.Errorf("checking frontend readiness: %w", err)
 	}
-	setCond(status, zabbixv1alpha1.ConditionFrontendReady, readyCondition(frontendReady), "FrontendDeployment", deploymentMessage("frontend", frontendReady), z.Generation)
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionFrontendReady, readyCondition(frontendReady), "FrontendDeployment", deploymentMessage("frontend", frontendReady), z.Generation)
 
 	componentsReady := serverReady && frontendReady
 
@@ -546,47 +546,10 @@ func (r *ZabbixReconciler) publishComponentReadiness(ctx context.Context, z *zab
 		if err != nil {
 			return false, fmt.Errorf("checking web service readiness: %w", err)
 		}
-		setCond(status, zabbixv1alpha1.ConditionWebServiceReady, readyCondition(webServiceReady), "WebServiceDeployment", deploymentMessage("web service", webServiceReady), z.Generation)
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionWebServiceReady, readyCondition(webServiceReady), "WebServiceDeployment", deploymentMessage("web service", webServiceReady), z.Generation)
 		componentsReady = componentsReady && webServiceReady
 	}
 	return componentsReady, nil
-}
-
-func statefulSetMessage(component string, ready bool) string {
-	if ready {
-		return fmt.Sprintf("%s statefulset is ready", component)
-	}
-	return fmt.Sprintf("%s statefulset is not ready yet", component)
-}
-
-// dropCondition removes one condition type from the status copy — used
-// when a feature is disabled and its (stale) condition must not linger.
-func dropCondition(status *zabbixv1alpha1.ZabbixStatus, t zabbixv1alpha1.ComponentConditionType) {
-	kept := make([]metav1.Condition, 0, len(status.Conditions))
-	for _, c := range status.Conditions {
-		if c.Type != string(t) {
-			kept = append(kept, c)
-		}
-	}
-	status.Conditions = kept
-}
-
-func setCond(status *zabbixv1alpha1.ZabbixStatus, t zabbixv1alpha1.ComponentConditionType, s metav1.ConditionStatus, reason, message string, generation int64) {
-	zabbix.SetCondition(&status.Conditions, string(t), s, reason, message, generation)
-}
-
-func readyCondition(ready bool) metav1.ConditionStatus {
-	if ready {
-		return metav1.ConditionTrue
-	}
-	return metav1.ConditionFalse
-}
-
-func deploymentMessage(component string, ready bool) string {
-	if ready {
-		return fmt.Sprintf("%s deployment is ready", component)
-	}
-	return fmt.Sprintf("%s deployment is not ready yet", component)
 }
 
 func frontendReplicas(z *zabbixv1alpha1.Zabbix) int32 {

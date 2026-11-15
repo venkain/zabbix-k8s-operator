@@ -56,13 +56,13 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 	// removed in the finalizer.
 	role := zabbix.ClusterMetricsClusterRole(z)
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error { return nil }); err != nil {
-		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"ClusterRBACFailed", fmt.Sprintf("reconciling ClusterRole %s: %v", role.Name, err), z.Generation)
 		return false
 	}
 	binding := zabbix.ClusterMetricsClusterRoleBinding(z)
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, binding, func() error { return nil }); err != nil {
-		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"ClusterRBACFailed", fmt.Sprintf("reconciling ClusterRoleBinding %s: %v", binding.Name, err), z.Generation)
 		return false
 	}
@@ -71,14 +71,14 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 	// Secret, filled asynchronously by the token controller.
 	monitorTokenValue, err := monitorToken(ctx, r.Client, z)
 	if err != nil {
-		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"MonitorTokenPending", err.Error(), z.Generation)
 		return false
 	}
 
 	apiTokenValue, err := apiToken(ctx, r.Client, z)
 	if err != nil {
-		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"APITokenPending", err.Error(), z.Generation)
 		return false
 	}
@@ -86,7 +86,7 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 	hostID, created, err := zabbix.EnsureClusterHost(ctx, r.HTTP, zabbix.APIEndpoint(z), apiTokenValue,
 		cm.ClusterName, monitorTokenValue, cm.TLSVerify)
 	if err != nil {
-		setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
+		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"HostRegistrationFailed", fmt.Sprintf("registering cluster host %q: %v", cm.ClusterName, err), z.Generation)
 		return false
 	}
@@ -94,7 +94,7 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 		log.Info("Created cluster host", "host", cm.ClusterName, "hostid", hostID)
 	}
 
-	setCond(status, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionTrue,
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionTrue,
 		"ClusterHostRegistered",
 		fmt.Sprintf("cluster host %q registered with template %q (hostid %d)", cm.ClusterName, zabbix.ClusterTemplate, hostID),
 		z.Generation)

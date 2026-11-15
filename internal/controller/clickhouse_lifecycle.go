@@ -44,7 +44,7 @@ func (r *ZabbixReconciler) reconcileManagedClickHouse(ctx context.Context, z *za
 		if err := r.removeManagedClickHouse(ctx, z); err != nil {
 			return 0, fmt.Errorf("removing managed clickhouse backend: %w", err)
 		}
-		dropCondition(status, zabbixv1alpha1.ConditionTelemetryStorageReady)
+		dropCondition(&status.Conditions, zabbixv1alpha1.ConditionTelemetryStorageReady)
 		return 0, nil
 	}
 	// The auth Secret must exist before the server pods (which mount
@@ -57,7 +57,7 @@ func (r *ZabbixReconciler) reconcileManagedClickHouse(ctx context.Context, z *za
 	if err != nil {
 		return 0, fmt.Errorf("checking clickhouse readiness: %w", err)
 	}
-	setCond(status, zabbixv1alpha1.ConditionTelemetryStorageReady, readyCondition(ready),
+	setCond(&status.Conditions, zabbixv1alpha1.ConditionTelemetryStorageReady, readyCondition(ready),
 		"ClickHouseStatefulSet", statefulSetMessage("clickhouse", ready), z.Generation)
 	if !ready {
 		return telemetryRetryDelay, nil
