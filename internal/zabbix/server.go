@@ -131,8 +131,9 @@ func serverStatefulSet(z *zabbixv1alpha1.Zabbix, db *DatabaseEnv, replicas int32
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
-					Containers: containers,
-					Volumes:    TelemetrySecretVolumes(z),
+					SecurityContext: PodSecurityContext(),
+					Containers:      containers,
+					Volumes:         TelemetrySecretVolumes(z),
 				},
 			},
 		},

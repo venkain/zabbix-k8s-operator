@@ -142,8 +142,9 @@ func ProxyStatefulSet(pg *zabbixv1alpha1.ZabbixProxyGroup, replicas int32, z *za
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{proxyContainer},
-					Volumes:    append(TelemetrySecretVolumes(z), APMSecretVolumes(pg)...),
+					SecurityContext: PodSecurityContext(),
+					Containers:      []corev1.Container{proxyContainer},
+					Volumes:         append(TelemetrySecretVolumes(z), APMSecretVolumes(pg)...),
 				},
 			},
 		},

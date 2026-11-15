@@ -188,7 +188,8 @@ func ClickHouseStatefulSet(z *zabbixv1alpha1.Zabbix) *appsv1.StatefulSet {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
+					SecurityContext: PodSecurityContext(),
+					Containers:      []corev1.Container{container},
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{

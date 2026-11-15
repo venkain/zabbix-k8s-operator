@@ -168,11 +168,13 @@ func KubeStateMetricsDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec: corev1.PodSpec{
+					SecurityContext:    PodSecurityContext(),
 					ServiceAccountName: KubeStateMetricsName(clusterMetricsNamePrefixOf(z)),
 					Containers: []corev1.Container{{
 						Name:            "kube-state-metrics",
 						Image:           kubeStateMetricsImage(spec),
 						ImagePullPolicy: corev1.PullIfNotPresent,
+						SecurityContext: RestrictedSecurityContext(),
 						Ports: []corev1.ContainerPort{
 							{Name: portNameHTTP, ContainerPort: KubeStateMetricsPort},
 						},
