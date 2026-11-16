@@ -6,7 +6,7 @@ availability, frontend, web service, and proxies — on a PostgreSQL database
 managed by [CloudNativePG](https://cloudnative-pg.io) or provided externally.
 
 **Status: development.** The v1alpha1 API and the core reconcile loops are
-implemented and lab-validated on kind; releases v0.1.0–v0.4.0 are
+implemented and lab-validated on kind; releases v0.1.0–v0.4.1 are
 published (see [Roadmap](#roadmap)).
 
 ## What it does
@@ -317,7 +317,7 @@ Install the operator (CRDs, RBAC, manager) from the committed bundle:
 
 ```sh
 kubectl apply -f \
-  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.4.0/dist/install.yaml
+  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.4.1/dist/install.yaml
 ```
 
 Or from the Helm chart (`dist/chart`; image defaults to the released
@@ -348,7 +348,7 @@ spec:
     size: 20Gi
 EOF
 kubectl -n monitoring apply -f \
-  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.4.0/config/samples/zabbix_v1alpha1_zabbix.yaml
+  https://raw.githubusercontent.com/venkain/zabbix-k8s-operator/v0.4.1/config/samples/zabbix_v1alpha1_zabbix.yaml
 kubectl -n monitoring get zabbix --watch
 ```
 
@@ -381,7 +381,8 @@ For development and iteration, deploy from source with
   converged through the Zabbix API; v0.4.0 release
 - [x] **Phase 8 — agent integration**: the official Zabbix MCP server
   (`spec.agentIntegration.mcp`, 8.0+; token-passthrough, restricted
-  container, 401-parked e2e)
+  container, 401-parked e2e); v0.4.1 release (with the security
+  hardening and the codebase streamlining passes)
 
 ## Documentation
 
