@@ -114,11 +114,12 @@ instance deletion — no cluster-scoped objects involved).
 ## e2e coverage
 
 1. Enable → Deployment/Service roll out, condition true, frontend-URL
-   env wired; `tools/list` over the in-cluster endpoint with a dummy
-   token → expect 401 (`allowedIPs: ["0.0.0.0/0"]` in the test CR so
-   the request reaches authn; parked-state assertion, matching the
-   clusterMetrics dummy-token pattern; real-token e2e stays with the
-   backlog item).
+   and tool-prefix env wired; over the in-cluster endpoint: tokenless
+   `tools/list` → 401 (authn enforced; `allowedIPs: ["0.0.0.0/0"]` in
+   the test CR so the source check passes), dummy-token `tools/list` →
+   200 with the tool prefix in the names (the token is forwarded per
+   call, tools/list is static — verified locally against the image).
+   Real-token e2e stays with the backlog item.
 2. Disable → objects gone, condition dropped, stack stays Ready.
 
 ## Non-goals

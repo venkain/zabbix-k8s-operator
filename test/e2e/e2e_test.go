@@ -609,11 +609,11 @@ spec:
 	It("provisions the agent-integration MCP server and answers 401 to tokenless clients", func() {
 		// Runs after the cluster-metrics specs: the stack is up and the
 		// feature is off. The MCP server is a pure k8s-side component:
-		// it keeps no credentials, so the parked-state assertion is the
-		// transport's own authn — a dummy-token tools/list over the
-		// in-cluster endpoint must answer 401 (403 would mean the
-		// AllowedIP wiring did not take; 200 would mean the endpoint is
-		// unsecured).
+		// it keeps no credentials, so the assertions are the
+		// transport's own authn (401 without a token) and a static
+		// tools/list served with the configured tool prefix (a dummy
+		// token passes transport authn — it is forwarded to the Zabbix
+		// API per call and never pre-validated here).
 		By("enabling agentIntegration.mcp on the instance")
 		_, err := runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
 			{"op":"add","path":"/spec/agentIntegration","value":{"mcp":{"allowedIPs":["0.0.0.0/0"],"toolPrefix":"e2e_"}}}
@@ -644,23 +644,39 @@ spec:
 		By("expecting the AgentIntegrationReady condition")
 		assertCondition("AgentIntegrationReady")
 
-		By("expecting a dummy-token tools/list to answer 401 over the in-cluster endpoint")
-		// The probe pod lives in the operator namespace; ClusterIP
-		// routing reaches the fleet-namespace service. allowedIPs
-		// 0.0.0.0/0 lets the request past the source check so the
-		// observed code is the authn verdict (401), not the source
-		// verdict (403).
+		By("expecting the transport to enforce authn and serve the tool list")
+		// Verified against the image locally: POST /mcp without an
+		// Authorization header answers 401 (authn enforced); any
+		// bearer token passes transport authn — the token is forwarded
+		// to the Zabbix API per call, and tools/list is static, so a
+		// DUMMY token answers 200 with the tool list (the parked-state
+		// signal is 401-for-tokenless, not 200-never). GET is a 405:
+		// the Streamable HTTP transport only serves POST here. The
+		// toolPrefix is visible in the tool names (e2e_ host_get).
 		Eventually(func(g Gomega) string {
 			out, err := runKubectl(operatorNamespace, "exec", "curl-metrics", "--",
-				"curl", "-sk", "-H", "Authorization: Bearer e2e-dummy-token",
+				"curl", "-sk",
 				"-H", "Content-Type: application/json",
 				"-H", "Accept: application/json, text/event-stream",
+				"-d", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
 				"-o", "/dev/null", "-w", "%{http_code}",
 				"http://zbx-mcp-server."+namespaceFleet+".svc:8443/mcp")
 			g.Expect(err).NotTo(HaveOccurred())
 			return strings.TrimSpace(out)
 		}, "120s", "5s").Should(Equal("401"),
-			"the MCP transport must reject a tokenless caller with 401 (not 403: AllowedIP must be wired, not 200: unsecured)")
+			"the MCP transport must reject a tokenless caller with 401 (not 403: AllowedIP must be wired)")
+
+		Eventually(func(g Gomega) string {
+			out, err := runKubectl(operatorNamespace, "exec", "curl-metrics", "--",
+				"curl", "-sk", "-H", "Authorization: Bearer e2e-dummy-token",
+				"-H", "Content-Type: application/json",
+				"-H", "Accept: application/json, text/event-stream",
+				"-d", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+				"http://zbx-mcp-server."+namespaceFleet+".svc:8443/mcp")
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "120s", "5s").Should(ContainSubstring("e2e_"),
+			"tools/list must answer over the in-cluster endpoint with the tool prefix applied")
 
 		By("disabling the feature and expecting the objects removed")
 		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p",
