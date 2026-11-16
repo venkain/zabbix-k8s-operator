@@ -36,7 +36,7 @@ and third-party tutorials are never normative and are not cited here.
 
 - Cross-version upgrade orchestration (7.0 → 8.0 DB schema migrations).
 - Managing Java Gateway, Agent DaemonSet mode, Browser Monitoring
-  (WebDriver), MCP server, or Bridge adapter.
+  (WebDriver), or Bridge adapter.
 - MySQL/MariaDB backends (PostgreSQL/TimescaleDB only).
 - Multi-cluster management, backup orchestration beyond what CNPG already
   provides.
@@ -75,7 +75,7 @@ and third-party tutorials are never normative and are not cited here.
 | Java Gateway | ✅ | later |
 | Agent 2 DaemonSet (node monitoring) | ✅ | later |
 | Browser Monitoring (Selenium WebDriver) | ✅ new | later |
-| MCP server | ✅ new | later |
+| MCP server | ✅ new | ✅ (agentIntegration.mcp, 8.0+) |
 | Bridge adapter | ✅ new | later |
 | 7.0 LTS | ✅ (until 2029) | ✅ install/run (D4) |
 

@@ -163,12 +163,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// placement. The 1c block below still runs the one-shot cleanup
 	// while the finalizer exists; until then the record on the served
 	// status (z.Status, not this copy) keeps addressing the objects.
-	if !zabbix.ClusterMetricsIsEnabled(&z) {
-		status.ClusterMetricsHostName = ""
-		status.ClusterMetricsNamespace = ""
-		status.ClusterMetricsNamePrefix = ""
-		dropCondition(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady)
-	}
+	clearClusterMetricsStatus(&z, status)
 
 	// 1b. The cluster-metrics cleanup finalizer comes before the first
 	// server-side registration below: deletion must always be able to
@@ -276,12 +271,19 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// 5b. Cluster-metrics ingestion: converge the cluster-scoped RBAC,
 	// wait for the monitor token, and register the cluster host with
-	// the server through the Zabbix API.
-	clusterMetricsDelay := time.Duration(0)
-	if z.Spec.ClusterMetrics != nil {
-		componentsReady = r.ensureClusterMetrics(ctx, &z, status) && componentsReady
-		clusterMetricsDelay = clusterMetricsRetryDelay
+	// the server through the Zabbix API (no-op while the feature is
+	// off).
+	cmReady, clusterMetricsDelay := r.ensureClusterMetrics(ctx, &z, status)
+	componentsReady = cmReady && componentsReady
+
+	// 5c. Agent integration (MCP server): the convergence itself flows
+	// through ConvergeAll; this handles the disabled/unsupported paths
+	// and publishes AgentIntegrationReady.
+	agentReady, err := r.reconcileAgentIntegration(ctx, &z, status)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
+	componentsReady = agentReady && componentsReady
 
 	readyMsg := "all components ready"
 	if !componentsReady {
@@ -380,6 +382,19 @@ func persistStatus(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbi
 	// controller retries with backoff and the next reconcile recomputes
 	// the status from fresh state.
 	return ctrl.Result{}, fmt.Errorf("updating status after 2 conflict attempts: %w", lastErr)
+}
+
+// clearClusterMetricsStatus clears the feature's status artifacts while
+// it is OFF (the Reconcile step 1a hygiene): the placement record, the
+// host name and the stale ClusterMetricsReady condition.
+func clearClusterMetricsStatus(z *zabbixv1alpha1.Zabbix, status *zabbixv1alpha1.ZabbixStatus) {
+	if zabbix.ClusterMetricsIsEnabled(z) {
+		return
+	}
+	status.ClusterMetricsHostName = ""
+	status.ClusterMetricsNamespace = ""
+	status.ClusterMetricsNamePrefix = ""
+	dropCondition(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady)
 }
 
 // migrateLegacyServerDeployment drains and removes the legacy server

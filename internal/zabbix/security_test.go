@@ -41,7 +41,7 @@ func TestPodSecurityContext(t *testing.T) {
 // declares a non-numeric USER (nobody), so runAsNonRoot is only
 // verifiable with an explicit RunAsUser (the e2e-caught failure).
 func TestRestrictedSecurityContext(t *testing.T) {
-	sc := RestrictedSecurityContext()
+	sc := RestrictedSecurityContext(kubeStateMetricsUID)
 	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
 		t.Errorf("restricted context runAsNonRoot=%v, want true", sc.RunAsNonRoot)
 	}
