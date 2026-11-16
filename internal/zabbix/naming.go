@@ -68,6 +68,9 @@ const (
 	// ComponentClickHouse marks the managed ClickHouse backend objects.
 	ComponentClickHouse = "clickhouse"
 
+	// ComponentMCPServer marks the agent-integration MCP server objects.
+	ComponentMCPServer = "mcp-server"
+
 	// Container ports (official images).
 	ServerPort   = int32(10051)
 	FrontendPort = int32(8080) // nginx in the official image listens on 8080
@@ -79,6 +82,9 @@ const (
 	// traffic); the same port is registered as each group member's
 	// local_port.
 	ProxyPort = int32(10051)
+	// MCPPort is the MCP server's ListenPort (official default); the
+	// MCP endpoint path is /mcp.
+	MCPPort = int32(8443)
 )
 
 // Names of the derived objects for a Zabbix resource named <name>.
@@ -88,6 +94,7 @@ const (
 	resourceSuffixWebService = "-web-service"
 	resourceSuffixProxy      = "-proxy"
 	resourceSuffixClickHouse = "-clickhouse"
+	resourceSuffixMCPServer  = "-mcp-server"
 )
 
 // managedProxyRecordPattern matches the server-side proxy records the
@@ -122,6 +129,10 @@ func ProxyName(instance string) string { return instance + resourceSuffixProxy }
 // derived objects (StatefulSet, Service). The auth Secret carries an
 // extra "-auth" suffix on top of it.
 func ClickHouseName(instance string) string { return instance + resourceSuffixClickHouse }
+
+// MCPServerName returns the name for the MCP server's derived objects
+// (Deployment, Service).
+func MCPServerName(instance string) string { return instance + resourceSuffixMCPServer }
 
 // ImageFor returns the official container image for a component,
 // honoring user overrides. Tag derivation from spec.version:

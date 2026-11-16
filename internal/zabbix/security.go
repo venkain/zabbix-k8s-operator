@@ -18,7 +18,6 @@ package zabbix
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/utils/ptr"
 )
 
 // PodSecurityContext returns the pod-level security baseline applied to
@@ -35,16 +34,15 @@ func PodSecurityContext() *corev1.PodSecurityContext {
 }
 
 // RestrictedSecurityContext is the container-level restricted baseline
-// for images known to run without privileges (kube-state-metrics is
-// upstream-supported in restricted pods). RunAsUser pins the numeric
-// upstream uid so runAsNonRoot is verifiable even when the image
-// declares a non-numeric USER (e.g. kube-state-metrics' "nobody").
-// Do not apply to images whose startup requirements are unverified —
-// the e2e suite is the gate.
-func RestrictedSecurityContext() *corev1.SecurityContext {
+// for images known to run without privileges. The uid must be the
+// numeric upstream uid of the image's USER so runAsNonRoot is
+// verifiable even when the image declares a non-numeric user name (e.g.
+// kube-state-metrics' "nobody"). Do not apply to images whose startup
+// requirements are unverified — the e2e suite is the gate.
+func RestrictedSecurityContext(uid int64) *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		RunAsNonRoot:             new(true),
-		RunAsUser:                ptr.To[int64](65534), // kube-state-metrics image runs as nobody (65534).
+		RunAsUser:                new(uid),
 		AllowPrivilegeEscalation: new(false),
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,

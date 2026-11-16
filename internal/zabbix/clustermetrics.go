@@ -141,6 +141,13 @@ func kubeStateMetricsImage(spec *zabbixv1alpha1.KubeStateMetricsSpec) string {
 // KubeStateMetricsDeployment builds the kube-state-metrics Deployment.
 // Single replica: the template scrapes one endpoint and two KSM
 // replicas would serve independent counters.
+const (
+	// kubeStateMetricsUID is the numeric uid the upstream
+	// kube-state-metrics image runs as ("nobody", 65534; the image
+	// declares a non-numeric USER).
+	kubeStateMetricsUID = int64(65534)
+)
+
 func KubeStateMetricsDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 	// ClusterMetrics is nil when the feature was disabled: the delete
 	// path still needs this builder for the object's name, so the
@@ -164,7 +171,7 @@ func KubeStateMetricsDeployment(z *zabbixv1alpha1.Zabbix) *appsv1.Deployment {
 			Name:            "kube-state-metrics",
 			Image:           kubeStateMetricsImage(spec),
 			ImagePullPolicy: corev1.PullIfNotPresent,
-			SecurityContext: RestrictedSecurityContext(),
+			SecurityContext: RestrictedSecurityContext(kubeStateMetricsUID),
 			Ports: []corev1.ContainerPort{
 				{Name: portNameHTTP, ContainerPort: KubeStateMetricsPort},
 			},

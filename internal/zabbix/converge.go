@@ -162,6 +162,15 @@ func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix,
 		)
 	}
 
+	// Agent-integration MCP server (Deployment + Service, same
+	// namespace as the resource: fully owner-referenced).
+	if MCPEnabled(z) {
+		objects = append(objects,
+			MCPDeployment(z),
+			MCPService(z),
+		)
+	}
+
 	for _, obj := range objects {
 		if err := Converge(ctx, c, z, obj); err != nil {
 			return fmt.Errorf("converging %T %s: %w", obj, obj.GetName(), err)

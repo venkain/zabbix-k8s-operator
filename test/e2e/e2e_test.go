@@ -330,7 +330,7 @@ spec:
   containers:
   - name: curl
     image: curlimages/curl:latest
-    command: ["sleep", "180"]
+    command: ["sleep", "600"]
 `)).To(Succeed())
 		_, err = runKubectl(operatorNamespace, "wait", "--for=condition=Ready",
 			"pod/curl-metrics", "--timeout=120s")
@@ -603,6 +603,102 @@ spec:
 			return out
 		}, "60s", "5s").ShouldNot(ContainSubstring("cluster-metrics-cleanup"),
 			"disabling the feature must release the cleanup finalizer")
+		assertCondition("Ready")
+	})
+
+	It("provisions the agent-integration MCP server and answers 401 to tokenless clients", func() {
+		// Runs after the cluster-metrics specs: the stack is up and the
+		// feature is off. The MCP server is a pure k8s-side component:
+		// it keeps no credentials, so the assertions are the
+		// transport's own authn (401 without a token) and a static
+		// tools/list served with the configured tool prefix (a dummy
+		// token passes transport authn — it is forwarded to the Zabbix
+		// API per call and never pre-validated here).
+		By("enabling agentIntegration.mcp on the instance")
+		_, err := runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
+			{"op":"add","path":"/spec/agentIntegration","value":{"mcp":{"allowedIPs":["0.0.0.0/0"],"toolPrefix":"e2e_"}}}
+		]`)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("expecting the MCP server workload and Service")
+		// rollout status fails instantly on a missing resource (see the
+		// placement spec), so existence is awaited explicitly first.
+		Eventually(func(g Gomega) {
+			_, err := runKubectl(namespaceFleet, "get", "deployment/zbx-mcp-server")
+			g.Expect(err).NotTo(HaveOccurred())
+			_, err = runKubectl(namespaceFleet, "get", "service/zbx-mcp-server")
+			g.Expect(err).NotTo(HaveOccurred())
+		}, "120s", "2s").Should(Succeed(), "the MCP server objects were never created")
+		assertRollout("deployment", "zbx-mcp-server")
+
+		By("expecting the frontend URL and tool prefix wired into the container")
+		env, err := kubectlJSONPath(namespaceFleet, "deployment/zbx-mcp-server",
+			`{.spec.template.spec.containers[0].env[?(@.name=="ZBX_FRONTEND_URL")].value}`)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(env).To(Equal("http://zbx-frontend."+namespaceFleet+".svc:80/api_jsonrpc.php"))
+		prefix, err := kubectlJSONPath(namespaceFleet, "deployment/zbx-mcp-server",
+			`{.spec.template.spec.containers[0].env[?(@.name=="ZBX_TOOL_PREFIX")].value}`)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(prefix).To(Equal("e2e_"))
+
+		By("expecting the AgentIntegrationReady condition")
+		assertCondition("AgentIntegrationReady")
+
+		By("expecting the transport to enforce authn and serve the tool list")
+		// Verified against the image locally: POST /mcp without an
+		// Authorization header answers 401 (authn enforced); any
+		// bearer token passes transport authn — the token is forwarded
+		// to the Zabbix API per call, and tools/list is static, so a
+		// DUMMY token answers 200 with the tool list (the parked-state
+		// signal is 401-for-tokenless, not 200-never). GET is a 405:
+		// the Streamable HTTP transport only serves POST here. The
+		// toolPrefix is visible in the tool names (e2e_ host_get).
+		Eventually(func(g Gomega) string {
+			out, err := runKubectl(operatorNamespace, "exec", "curl-metrics", "--",
+				"curl", "-sk",
+				"-H", "Content-Type: application/json",
+				"-H", "Accept: application/json, text/event-stream",
+				"-d", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+				"-o", "/dev/null", "-w", "%{http_code}",
+				"http://zbx-mcp-server."+namespaceFleet+".svc:8443/mcp")
+			g.Expect(err).NotTo(HaveOccurred())
+			return strings.TrimSpace(out)
+		}, "120s", "5s").Should(Equal("401"),
+			"the MCP transport must reject a tokenless caller with 401 (not 403: AllowedIP must be wired)")
+
+		Eventually(func(g Gomega) string {
+			out, err := runKubectl(operatorNamespace, "exec", "curl-metrics", "--",
+				"curl", "-sk", "-H", "Authorization: Bearer e2e-dummy-token",
+				"-H", "Content-Type: application/json",
+				"-H", "Accept: application/json, text/event-stream",
+				"-d", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+				"http://zbx-mcp-server."+namespaceFleet+".svc:8443/mcp")
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "120s", "5s").Should(ContainSubstring("e2e_"),
+			"tools/list must answer over the in-cluster endpoint with the tool prefix applied")
+
+		By("disabling the feature and expecting the objects removed")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p",
+			`[{"op":"remove","path":"/spec/agentIntegration"}]`)
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func(g Gomega) bool {
+			_, depErr := runKubectl(namespaceFleet, "get", "deployment/zbx-mcp-server")
+			g.Expect(depErr).To(HaveOccurred(), "the MCP deployment must be deleted by the disable path")
+			_, svcErr := runKubectl(namespaceFleet, "get", "service/zbx-mcp-server")
+			g.Expect(svcErr).To(HaveOccurred(), "the MCP service must be deleted by the disable path")
+			return true
+		}, "90s", "5s").Should(BeTrue())
+
+		By("expecting the condition dropped and the stack back at full readiness")
+		Eventually(func(g Gomega) string {
+			out, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx",
+				`{.status.conditions[?(@.type=="AgentIntegrationReady")].reason}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "60s", "5s").Should(BeEmpty(),
+			"disabling the feature must drop the AgentIntegrationReady condition")
 		assertCondition("Ready")
 	})
 

@@ -62,3 +62,17 @@ spec:
   #     # createSchema: true       # default: entrypoint creates tables
   #     # tls:
   #     #   secretName: clickhouse-tls
+  # Optional (Zabbix 8.0+): run the official Zabbix MCP server so AI
+  # agents can read monitoring data and act on incidents through their
+  # own API token (the server keeps no credentials). Set allowedIPs to
+  # your MCP clients' addresses — the image default (localhost only) is
+  # unusable in-cluster. See README → Agent integration (MCP server).
+  # agentIntegration:
+  #   mcp:
+  #     allowedIPs: ["10.244.0.0/16"]
+  #     # toolPrefix: zbx_          # avoid MCP tool-name conflicts
+  #     # allowTools: []            # wildcard rules (REPLACE the image's
+  #     # denyTools: []             # default policy entirely when set)
+  #     # resources: {}
+  #     # service:                  # default ClusterIP; NodePort/LB opt-in
+  #     #   type: NodePort

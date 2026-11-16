@@ -23,6 +23,9 @@ Declarative, level-triggered management of a complete Zabbix deployment:
   backend or external endpoint) + OpenTelemetry (APM) collection on proxy
   groups — including the server-side activation (global APM data source +
   per-proxy data collection) converged through the Zabbix API (Zabbix 8.0+)
+- **Agent integration**: the official Zabbix MCP server (Zabbix 8.0+,
+  `spec.agentIntegration.mcp`) so AI agents can work with the instance
+  through their own API token — token passthrough, no stored credentials
 - Status conditions, events, and drift repair for everything it owns
 
 Design follows the Kubernetes operator pattern throughout: desired state is
@@ -34,9 +37,9 @@ it, and nothing depends on imperative re-invocation.
 Decisions are tracked with rationale in
 [docs/requirements.md](docs/requirements.md).
 
-- **Components**: Server (HA) + frontend + web service + proxy group.
-  Java Gateway, Agent DaemonSet mode, Browser Monitoring and MCP server are
-  later versions.
+- **Components**: Server (HA) + frontend + web service + proxy group +
+  MCP server. Java Gateway, Agent DaemonSet mode, Browser Monitoring and
+  the Bridge adapter are later versions.
 - **Database**: CloudNativePG integration first; external database via
   existing Secret second.
 - **Versions**: Zabbix 8.0 (primary) and 7.0 LTS (install & run target).
@@ -237,6 +240,48 @@ data source through `DataSourceReady` (skipped without an API token —
 configure the data source yourself in that case), and the per-proxy
 enablement through `APMRegistered` on the ZabbixProxyGroup.
 
+## Agent integration (MCP server)
+
+Zabbix 8.0 ships an official MCP server
+(`zabbix/zabbix-mcp-server`): AI agents connect over the Model Context
+Protocol (Streamable HTTP, `/mcp` on port 8443) to browse
+hosts/triggers/problems and act on incidents. Set
+`spec.agentIntegration.mcp` and the operator deploys it wired to the
+instance's own frontend.
+
+**Token passthrough — no Secrets.** The MCP server keeps no
+credentials: every request must carry the caller's Zabbix API token
+(`Authorization: Bearer <token>`), so what an agent sees and changes is
+exactly what that user may, and every action lands in the Zabbix audit
+log under that user's name. The operator provisions nothing to store
+or rotate. Give each agent its own token.
+
+```yaml
+spec:
+  agentIntegration:
+    mcp:
+      # Required to be useful: the client sources the server accepts
+      # (IPs, CIDRs, DNS names). Unset keeps the image default
+      # (localhost only) — no in-cluster MCP client can use that.
+      allowedIPs: ["10.244.0.0/16"]
+      # toolPrefix: zbx_     # avoid MCP tool-name conflicts
+      # allowTools/denyTools: wildcard rules; note that setting ANY
+      # rule replaces the image's default policy entirely (the
+      # operator re-renders the image's default deny list — item_get,
+      # lld_get, interface_get, macro_get, history_get — behind your
+      # rules).
+      # resources: {}
+      # service: {type: NodePort}   # default ClusterIP
+```
+
+The container runs with a full restricted security context (the image
+declares a numeric user), the Service is ClusterIP by default (agent
+access requires in-cluster connectivity; NodePort/LoadBalancer are
+explicit opt-ins — pair them with `allowedIPs`), and readiness reports
+through the `AgentIntegrationReady` condition. Disabling the feature
+(or downgrading to Zabbix 7.0, which has no MCP server) removes the
+objects deterministically.
+
 ## Testing
 
 **Unit/integration:** `make test` — envtest-backed controller tests
@@ -334,6 +379,9 @@ For development and iteration, deploy from source with
 - [x] **Phase 7 — APM one-line activation**: the server-side gate the
   proxies wait on (global APM data source + per-proxy data collection)
   converged through the Zabbix API; v0.4.0 release
+- [x] **Phase 8 — agent integration**: the official Zabbix MCP server
+  (`spec.agentIntegration.mcp`, 8.0+; token-passthrough, restricted
+  container, 401-parked e2e)
 
 ## Documentation
 

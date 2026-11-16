@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 	"github.com/venkain/zabbix-k8s-operator/internal/zabbix"
@@ -32,12 +33,16 @@ import (
 )
 
 // ensureClusterMetrics converges the cluster-metrics ingestion and
-// reports readiness. Steps: cluster-scoped RBAC (both identities), the
-// monitor token (the service-account token controller fills the Secret
-// asynchronously), then the Zabbix-side host registration. Failures set
-// the ClusterMetricsReady condition and return false so the next
-// reconcile retries at a human pace.
-func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1alpha1.Zabbix, status *zabbixv1alpha1.ZabbixStatus) bool {
+// reports readiness, plus the drift-check cadence while the feature is
+// on (0 while off — a no-op then). Steps: cluster-scoped RBAC (both
+// identities), the monitor token (the service-account token controller
+// fills the Secret asynchronously), then the Zabbix-side host
+// registration. Failures set the ClusterMetricsReady condition and
+// return false so the next reconcile retries at a human pace.
+func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1alpha1.Zabbix, status *zabbixv1alpha1.ZabbixStatus) (bool, time.Duration) {
+	if z.Spec.ClusterMetrics == nil {
+		return true, 0
+	}
 	log := logf.FromContext(ctx)
 	cm := z.Spec.ClusterMetrics
 
@@ -58,13 +63,13 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error { return nil }); err != nil {
 		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"ClusterRBACFailed", fmt.Sprintf("reconciling ClusterRole %s: %v", role.Name, err), z.Generation)
-		return false
+		return false, clusterMetricsRetryDelay
 	}
 	binding := zabbix.ClusterMetricsClusterRoleBinding(z)
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, binding, func() error { return nil }); err != nil {
 		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"ClusterRBACFailed", fmt.Sprintf("reconciling ClusterRoleBinding %s: %v", binding.Name, err), z.Generation)
-		return false
+		return false, clusterMetricsRetryDelay
 	}
 
 	// The monitor token: created as an empty service-account-token
@@ -73,14 +78,14 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 	if err != nil {
 		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"MonitorTokenPending", err.Error(), z.Generation)
-		return false
+		return false, clusterMetricsRetryDelay
 	}
 
 	apiTokenValue, err := apiToken(ctx, r.Client, z)
 	if err != nil {
 		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"APITokenPending", err.Error(), z.Generation)
-		return false
+		return false, clusterMetricsRetryDelay
 	}
 
 	hostID, created, err := zabbix.EnsureClusterHost(ctx, r.HTTP, zabbix.APIEndpoint(z), apiTokenValue,
@@ -88,7 +93,7 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 	if err != nil {
 		setCond(&status.Conditions, zabbixv1alpha1.ConditionClusterMetricsReady, metav1.ConditionFalse,
 			"HostRegistrationFailed", fmt.Sprintf("registering cluster host %q: %v", cm.ClusterName, err), z.Generation)
-		return false
+		return false, clusterMetricsRetryDelay
 	}
 	if created {
 		log.Info("Created cluster host", "host", cm.ClusterName, "hostid", hostID)
@@ -99,7 +104,7 @@ func (r *ZabbixReconciler) ensureClusterMetrics(ctx context.Context, z *zabbixv1
 		fmt.Sprintf("cluster host %q registered with template %q (hostid %d)", cm.ClusterName, zabbix.ClusterTemplate, hostID),
 		z.Generation)
 	status.ClusterMetricsHostName = cm.ClusterName
-	return true
+	return true, clusterMetricsRetryDelay
 }
 
 // monitorToken reads the monitor service account's long-lived token

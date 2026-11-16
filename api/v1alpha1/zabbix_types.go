@@ -259,6 +259,75 @@ type KubeStateMetricsSpec struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// AgentIntegrationSpec groups the optional AI-agent-facing components
+// the operator can deploy for this instance.
+type AgentIntegrationSpec struct {
+	// mcp configures the official Zabbix MCP server (Model Context
+	// Protocol, Zabbix 8.0+), which lets AI agents read monitoring data
+	// and act on incidents through the user's own API token. The server
+	// keeps no credentials: every request must carry the caller's Zabbix
+	// API token, so access and the audit trail follow that user.
+	// +optional
+	MCP *MCPSpec `json:"mcp,omitempty"`
+}
+
+// MCPSpec configures the operator-managed Zabbix MCP server. The server
+// is stateless (a single replica behind a plain Service suffices) and
+// authenticates entirely through the API token presented by the MCP
+// client on every request — the operator provisions no Secrets for it.
+type MCPSpec struct {
+	// image overrides the MCP server container image. The default is
+	// the official zabbix/zabbix-mcp-server image at the instance's
+	// spec.version.
+	// +optional
+	Image *ImageSpec `json:"image,omitempty"`
+
+	// resources for the MCP server container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// allowedIPs lists the MCP client sources accepted by the server
+	// (IP addresses, CIDR networks or DNS names, comma-joined into the
+	// image's ZBX_ALLOWEDIP). Unset keeps the image default (localhost
+	// only), which no in-cluster MCP client can use — set this when
+	// enabling the feature, e.g. the agent pods' CIDR. "0.0.0.0/0"
+	// accepts connections from any address; prefer the default
+	// ClusterIP Service exposure and the token-per-user model over
+	// widening this.
+	// +optional
+	AllowedIPs []string `json:"allowedIPs,omitempty"`
+
+	// allowTools whitelists MCP tools by wildcard rule (e.g. "host_*").
+	// CAUTION: setting any tool rule (allow or deny) REPLACES the
+	// image's default policy entirely — the operator then renders the
+	// image's default deny list (item_get, lld_get, interface_get,
+	// macro_get, history_get) behind the user rules so the sensitive
+	// tools stay denied unless explicitly allowed. Rules are evaluated
+	// in order, first match wins.
+	// +optional
+	AllowTools []string `json:"allowTools,omitempty"`
+
+	// denyTools adds wildcard deny rules on top of the image's default
+	// deny policy (see allowTools for the replacement semantics).
+	// +optional
+	DenyTools []string `json:"denyTools,omitempty"`
+
+	// toolPrefix prefixes every exposed MCP tool name (image's
+	// ZBX_TOOL_PREFIX), e.g. to avoid conflicts with other MCP servers.
+	// Tool access rules match the names without the prefix.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]*$`
+	ToolPrefix string `json:"toolPrefix,omitempty"`
+
+	// service configures the MCP server Service exposure. The default
+	// is ClusterIP: agent access requires in-cluster connectivity;
+	// NodePort/LoadBalancer are explicit opt-ins (pair them with
+	// allowedIPs).
+	// +optional
+	Service *FrontendServiceSpec `json:"service,omitempty"`
+}
+
 // ZabbixSpec defines the desired state of Zabbix.
 // +kubebuilder:validation:XValidation:message="api.tokenSecretRef is required when server.replicas > 1: HA mode needs the Zabbix API for active-node routing",rule="!(has(self.server) && has(self.server.replicas) && self.server.replicas > 1) || (has(self.api) && has(self.api.tokenSecretRef))"
 // +kubebuilder:validation:XValidation:message="clusterMetrics requires spec.api (api.tokenSecretRef): the cluster host is managed through the Zabbix API",rule="!has(self.clusterMetrics) || (has(self.api) && has(self.api.tokenSecretRef))"
@@ -303,6 +372,12 @@ type ZabbixSpec struct {
 	// older versions). Optional; off by default.
 	// +optional
 	TelemetryStorage *TelemetryStorageSpec `json:"telemetryStorage,omitempty"`
+
+	// agentIntegration deploys the AI-agent-facing components. Optional;
+	// off by default. The MCP server requires Zabbix 8.0+ (no MCP
+	// server exists in 7.0).
+	// +optional
+	AgentIntegration *AgentIntegrationSpec `json:"agentIntegration,omitempty"`
 }
 
 // TelemetryStorageSpec configures ClickHouse as the history storage
@@ -509,6 +584,11 @@ const (
 	// telemetry storage, cleared when it is removed. Requires spec.api
 	// (a token); without one the data source is not managed.
 	ConditionDataSourceReady ComponentConditionType = "DataSourceReady"
+
+	// ConditionAgentIntegrationReady indicates the agent integration
+	// workloads (spec.agentIntegration, currently the MCP server) are
+	// deployed and their pods are healthy.
+	ConditionAgentIntegrationReady ComponentConditionType = "AgentIntegrationReady"
 )
 
 // ZabbixStatus defines the observed state of Zabbix.
