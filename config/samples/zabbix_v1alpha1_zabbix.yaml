@@ -76,3 +76,18 @@ spec:
   #     # resources: {}
   #     # service:                  # default ClusterIP; NodePort/LB opt-in
   #     #   type: NodePort
+  # Platform hardening: ON BY DEFAULT with safe settings — an absent
+  # block means "enforce the hardened defaults". Opt out per knob.
+  # The API-driven parts (password policy, MFA) require spec.api;
+  # without it they are reported as pending on the HardeningReady
+  # condition instead of being enforced. See README → Platform
+  # hardening.
+  # hardening:
+  #   passwordPolicy:
+  #     enabled: true             # default; false = stop enforcing
+  #     # minLength: 12           # Zabbix passwd_min_length (1–70)
+  #     # checkRules: [case, digits, special, commonPasswords]  # default: all
+  #   networkPolicy: true         # default; false = no egress lockdown
+  #   # mfa: {}                   # opt-in: presence enables TOTP MFA
+  #     # hashFunction: sha512    # sha1 | sha256 | sha512
+  #     # codeLength: 8           # 6 | 8

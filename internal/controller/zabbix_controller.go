@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -111,6 +112,9 @@ type ZabbixReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch
+// Hardening NetworkPolicy lockdown of the auxiliary workloads
+// (kube-state-metrics endpoint, MCP server).
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
@@ -131,7 +135,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if !z.DeletionTimestamp.IsZero() {
-		return r.finalizeClusterMetrics(ctx, &z)
+		return r.finalizeHardened(ctx, &z)
 	}
 
 	// The status is built on a copy of the CURRENT status: SetStatusCondition
@@ -165,27 +169,12 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// status (z.Status, not this copy) keeps addressing the objects.
 	clearClusterMetricsStatus(&z, status)
 
-	// 1b. The cluster-metrics cleanup finalizer comes before the first
-	// server-side registration below: deletion must always be able to
-	// clean up the Zabbix host and the cluster-scoped RBAC.
-	if zabbix.ClusterMetricsIsEnabled(&z) && !controllerutil.ContainsFinalizer(&z, ClusterMetricsFinalizer) {
-		controllerutil.AddFinalizer(&z, ClusterMetricsFinalizer)
-		if err := r.Update(ctx, &z); err != nil {
-			return ctrl.Result{}, fmt.Errorf("adding cluster-metrics cleanup finalizer: %w", err)
-		}
-	}
-	// 1c. Feature flag turned OFF while the finalizer (and all the
-	// cluster-metrics side effects) are still around: garbage
-	// collection cannot help — the resource itself stays alive — so
-	// the operator removes the host, the endpoint objects and the
-	// cluster-scoped RBAC itself, then releases the finalizer. The
-	// status cleanup (record, host name, condition) is handled by 1a
-	// above, which also covers reconciles where the finalizer is
-	// already gone.
-	if !zabbix.ClusterMetricsIsEnabled(&z) && controllerutil.ContainsFinalizer(&z, ClusterMetricsFinalizer) {
-		if err := r.disableClusterMetrics(ctx, &z); err != nil {
-			return ctrl.Result{}, fmt.Errorf("disabling cluster metrics: %w", err)
-		}
+	// 1b/1b-bis/1c. Cleanup-finalizer lifecycle: add both cleanup
+	// finalizers (cluster-metrics and hardening) before any server-side
+	// registration, and run the disable cleanup when the feature flag
+	// turned OFF while the finalizer is still around.
+	if err := r.ensureCleanupFinalizers(ctx, &z); err != nil {
+		return ctrl.Result{}, err
 	}
 	setCond(&status.Conditions, zabbixv1alpha1.ConditionDatabaseReady, metav1.ConditionTrue, "DatabaseResolved",
 		fmt.Sprintf("connection details resolved from secret %s", db.SecretName()), z.Generation)
@@ -315,6 +304,15 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	requeueDelay = foldRequeueDelays(requeueDelay, telemetryDelay, apmDataSourceDelay)
 
+	// 5d. Platform hardening (spec.hardening, default-on): the
+	// NetworkPolicy lockdown flows through ConvergeAll; this converges
+	// the API-driven parts (password policy, MFA) and publishes
+	// HardeningReady. Deliberately NOT folded into componentsReady: an
+	// instance without spec.api runs fully Ready with the API-driven
+	// hardening pending — the condition carries the pending reason.
+	hardeningDelay := r.ensureHardening(ctx, &z, status)
+	requeueDelay = foldRequeueDelays(requeueDelay, hardeningDelay)
+
 	return persistStatus(ctx, r.Client, &z, *status, requeueDelay)
 }
 
@@ -382,6 +380,46 @@ func persistStatus(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbi
 	// controller retries with backoff and the next reconcile recomputes
 	// the status from fresh state.
 	return ctrl.Result{}, fmt.Errorf("updating status after 2 conflict attempts: %w", lastErr)
+}
+
+// ensureCleanupFinalizers runs the Reconcile steps 1b/1b-bis/1c: add
+// the cleanup finalizers before any server-side registration, and run
+// the disable cleanup when a feature flag turned OFF while its
+// finalizer (and side effects) are still around. Adds BOTH finalizers
+// in one pass when both are needed.
+//
+//   - 1b: the cluster-metrics cleanup finalizer comes before the first
+//     server-side registration: deletion must always be able to clean
+//     up the Zabbix host and the cluster-scoped RBAC.
+//   - 1b-bis: the hardening cleanup finalizer sits in the same slot:
+//     the API-driven hardening state (password policy, MFA method)
+//     must be revertible on deletion. Present whenever any API-driven
+//     part is active — the default-on password policy makes that
+//     "every instance" — so a later spec.api addition can never race
+//     the first API write against a deletion.
+//   - 1c: feature flag turned OFF while the finalizer is still around:
+//     garbage collection cannot help — the resource itself stays
+//     alive — so the operator removes the host, the endpoint objects
+//     and the cluster-scoped RBAC itself, then releases the finalizer.
+func (r *ZabbixReconciler) ensureCleanupFinalizers(ctx context.Context, z *zabbixv1alpha1.Zabbix) error {
+	if zabbix.ClusterMetricsIsEnabled(z) && !controllerutil.ContainsFinalizer(z, ClusterMetricsFinalizer) {
+		controllerutil.AddFinalizer(z, ClusterMetricsFinalizer)
+		if err := r.Update(ctx, z); err != nil {
+			return fmt.Errorf("adding cluster-metrics cleanup finalizer: %w", err)
+		}
+	}
+	if zabbix.HardeningNeedsFinalizer(z) && !controllerutil.ContainsFinalizer(z, HardeningFinalizer) {
+		controllerutil.AddFinalizer(z, HardeningFinalizer)
+		if err := r.Update(ctx, z); err != nil {
+			return fmt.Errorf("adding hardening cleanup finalizer: %w", err)
+		}
+	}
+	if !zabbix.ClusterMetricsIsEnabled(z) && controllerutil.ContainsFinalizer(z, ClusterMetricsFinalizer) {
+		if err := r.disableClusterMetrics(ctx, z); err != nil {
+			return fmt.Errorf("disabling cluster metrics: %w", err)
+		}
+	}
+	return nil
 }
 
 // clearClusterMetricsStatus clears the feature's status artifacts while
@@ -580,6 +618,7 @@ func (r *ZabbixReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Named("zabbix").
 		Complete(r)
 }

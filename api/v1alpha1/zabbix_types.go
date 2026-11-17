@@ -259,6 +259,76 @@ type KubeStateMetricsSpec struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// HardeningSpec configures the platform hardening the operator applies
+// to every instance by default (safe defaults; each knob is opt-out).
+// The Kubernetes-side parts (NetworkPolicy) apply unconditionally; the
+// Zabbix-API-side parts (password policy, MFA) require spec.api —
+// without a token they are reported through the HardeningReady
+// condition instead of being enforced.
+type HardeningSpec struct {
+	// passwordPolicy enforces password complexity through the Zabbix API
+	// (authentication.update: passwd_min_length + passwd_check_rules).
+	// It applies to NEW passwords only (existing users are unaffected).
+	// The default is a minimum length of 12 with every check rule on.
+	// +optional
+	PasswordPolicy *PasswordPolicySpec `json:"passwordPolicy,omitempty"`
+
+	// networkPolicy deploys default-deny egress NetworkPolicies for the
+	// operator-deployed auxiliary workloads: kube-state-metrics (the
+	// cluster-metrics endpoint; allowed egress: DNS + the HTTPS API-server
+	// path) and the MCP server (allowed egress: DNS + the instance's own
+	// frontend; ingress: the MCP port only). Set false to opt out.
+	// +optional
+	NetworkPolicy *bool `json:"networkPolicy,omitempty"`
+
+	// mfa enables TOTP multi-factor authentication on the instance
+	// (opt-in: the presence of the block enables it; removing it
+	// disables MFA again). The operator ensures a TOTP method dedicated
+	// to this instance and switches the global MFA to it. Requires
+	// spec.api and Zabbix 7.0+. Users enroll at their next login; API
+	// tokens are not affected by MFA.
+	// +optional
+	MFA *MFASpec `json:"mfa,omitempty"`
+}
+
+// PasswordPolicySpec tunes the enforced password complexity. The
+// default-on knobs resolve as: minimum length 12, every check rule.
+type PasswordPolicySpec struct {
+	// enabled turns the enforcement off. The hardening default is on.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// minLength is the minimum password length (Zabbix
+	// passwd_min_length, 1–70). Unset (0) resolves to 12.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=70
+	// +optional
+	MinLength int `json:"minLength,omitempty"`
+
+	// checkRules selects the complexity checks to enforce (Zabbix
+	// passwd_check_rules bitmask). Unset (empty) resolves to all of
+	// them: case, digits, special, commonPasswords.
+	// +kubebuilder:validation:items:Enum=case;digits;special;commonPasswords
+	// +optional
+	CheckRules []string `json:"checkRules,omitempty"`
+}
+
+// MFASpec configures the TOTP MFA method the operator ensures for this
+// instance.
+type MFASpec struct {
+	// hashFunction is the TOTP hash algorithm (Zabbix mfa
+	// hash_function). The default is sha512.
+	// +kubebuilder:validation:Enum=sha1;sha256;sha512
+	// +optional
+	HashFunction string `json:"hashFunction,omitempty"`
+
+	// codeLength is the TOTP verification code length (Zabbix mfa
+	// code_length: 6 or 8 digits). The default is 8.
+	// +kubebuilder:validation:Enum=6;8
+	// +optional
+	CodeLength int `json:"codeLength,omitempty"`
+}
+
 // AgentIntegrationSpec groups the optional AI-agent-facing components
 // the operator can deploy for this instance.
 type AgentIntegrationSpec struct {
@@ -378,6 +448,12 @@ type ZabbixSpec struct {
 	// server exists in 7.0).
 	// +optional
 	AgentIntegration *AgentIntegrationSpec `json:"agentIntegration,omitempty"`
+
+	// hardening applies platform hardening to the deployed Zabbix.
+	// Enabled by default with safe settings; set individual knobs to
+	// opt out. The API-driven parts require spec.api.
+	// +optional
+	Hardening *HardeningSpec `json:"hardening,omitempty"`
 }
 
 // TelemetryStorageSpec configures ClickHouse as the history storage
@@ -589,6 +665,14 @@ const (
 	// workloads (spec.agentIntegration, currently the MCP server) are
 	// deployed and their pods are healthy.
 	ConditionAgentIntegrationReady ComponentConditionType = "AgentIntegrationReady"
+
+	// ConditionHardeningReady indicates the platform hardening
+	// (spec.hardening, default-on) is applied: the password policy and
+	// MFA converged through the Zabbix API and the NetworkPolicy
+	// lockdown deployed for the auxiliary workloads. Not part of the
+	// aggregate Ready: an instance without spec.api runs fully Ready
+	// with the API-driven hardening pending (the condition names it).
+	ConditionHardeningReady ComponentConditionType = "HardeningReady"
 )
 
 // ZabbixStatus defines the observed state of Zabbix.
@@ -641,6 +725,23 @@ type ZabbixStatus struct {
 	APMDataSourceURL string `json:"apmDataSourceURL,omitempty"`
 	// +optional
 	APMDataSourceDB string `json:"apmDataSourceDB,omitempty"`
+
+	// hardeningPasswordMinLength and hardeningPasswordCheckRules record
+	// the password policy values the operator last applied through the
+	// API (0 = never applied). The disable and deletion paths use them
+	// to reset only a policy still carrying the operator's values — a
+	// policy a user re-tuned by hand in the frontend is never touched.
+	// +optional
+	HardeningPasswordMinLength int `json:"hardeningPasswordMinLength,omitempty"`
+	// +optional
+	HardeningPasswordCheckRules int `json:"hardeningPasswordCheckRules,omitempty"`
+
+	// hardeningMFAMethodID records the id of the TOTP method
+	// (mfa.create) the operator ensured for this instance, so the
+	// disable and deletion paths can switch MFA off and remove exactly
+	// the method they created. Empty = no operator-managed method.
+	// +optional
+	HardeningMFAMethodID string `json:"hardeningMFAMethodID,omitempty"`
 }
 
 // +kubebuilder:object:root=true

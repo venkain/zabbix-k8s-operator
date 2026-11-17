@@ -26,6 +26,9 @@ Declarative, level-triggered management of a complete Zabbix deployment:
 - **Agent integration**: the official Zabbix MCP server (Zabbix 8.0+,
   `spec.agentIntegration.mcp`) so AI agents can work with the instance
   through their own API token — token passthrough, no stored credentials
+- **Platform hardening** (`spec.hardening`, on by default): password
+  complexity enforced through the Zabbix API, TOTP MFA opt-in, and a
+  NetworkPolicy egress lockdown of the auxiliary workloads
 - Status conditions, events, and drift repair for everything it owns
 
 Design follows the Kubernetes operator pattern throughout: desired state is
@@ -281,6 +284,82 @@ explicit opt-ins — pair them with `allowedIPs`), and readiness reports
 through the `AgentIntegrationReady` condition. Disabling the feature
 (or downgrading to Zabbix 7.0, which has no MCP server) removes the
 objects deterministically.
+
+## Platform hardening
+
+Every instance ships hardened by default: `spec.hardening` needs no
+configuration, and each knob is an explicit opt-out. The Kubernetes-side
+part applies unconditionally; the Zabbix-API-side parts require
+`spec.api` — an instance without an API token runs fully Ready with the
+API-driven hardening pending, reported by the `HardeningReady`
+condition (`APINotConfigured`). `HardeningReady` is deliberately NOT
+part of the aggregate `Ready` condition.
+
+**Password policy** (default on): enforces a minimum length of 12 with
+every complexity check (upper+lower case, digits, special characters,
+no common passwords / "zabbix" derivations) through
+`authentication.update` (`passwd_min_length` / `passwd_check_rules`).
+It applies to NEW passwords only — existing users keep working. The
+settings are converged diff-based (unchanged values are never
+rewritten) and realigned on a 30s drift cadence, because they live
+outside Kubernetes. Opt out with `hardening.passwordPolicy.enabled:
+false`; the operator then resets the settings to the Zabbix stock
+values (8 / common-passwords-check) — but ONLY if they still carry the
+operator's values. A policy you re-tuned by hand in the frontend is
+never touched.
+
+**MFA** (opt-in): the presence of `hardening.mfa` enables TOTP
+multi-factor authentication (Zabbix 7.0+). The operator ensures a TOTP
+method dedicated to the instance (`<name>-totp`, SHA-512, 8-digit codes
+by default) and switches the global authentication to it. Users enroll
+at their next login; API tokens are not affected by MFA. Removing the
+block switches MFA back off and deletes the operator's method — but
+only when the global authentication still links to the operator's
+method: an MFA setup you replaced with your own method is left alone.
+
+**NetworkPolicy lockdown** (default on): default-deny egress for the
+auxiliary workloads the operator deploys, with an allowlist of exactly
+the connections they legitimately make:
+- kube-state-metrics (the cluster-metrics endpoint): DNS + HTTPS only
+  (it talks to the Kubernetes API server; the HTTPS lane is
+  destination-open on ports 443 and 6443 because NetworkPolicies
+  cannot select the API server by pod labels and the operator does
+  not assume the cluster's service CIDR — a documented limitation.
+  Both ports because policy agents evaluate the connection after the
+  service-proxy DNAT, so the port seen is the API server's backend
+  port, which differs between pod- and host-networked API servers).
+  Ingress stays open: the server scrapes the metrics endpoint *through*
+  the API proxy, so the source is the API server, not a selectable pod.
+- the MCP server: ingress on the MCP port only; egress restricted to
+  DNS + the instance's own frontend (its only outbound dependency).
+
+The data-plane components (server, frontend, proxies, ClickHouse) are
+deliberately not policy-restricted: their traffic graph includes
+user-defined targets (proxies reach arbitrary agents; the server
+monitors arbitrary endpoints), so a generated policy would either break
+monitoring or be too wide to be worth having. The policies live with
+their workloads (`<workload>-egress` / `<workload>-policy` names) and
+are removed when the lockdown is opted out or the workload goes away.
+
+```yaml
+spec:
+  hardening:
+    passwordPolicy:
+      enabled: true             # default; false = stop enforcing
+      # minLength: 12           # Zabbix passwd_min_length (1–70)
+      # checkRules: [case, digits, special, commonPasswords]
+    networkPolicy: true         # default; false = no egress lockdown
+    # mfa: {}                   # opt-in: presence enables TOTP MFA
+    #   hashFunction: sha512    # sha1 | sha256 | sha512
+    #   codeLength: 8           # 6 | 8
+```
+
+Disabling the API-driven parts (and deleting the resource) reverts what
+the operator set — guarded by the `zabbix.venkain.io/hardening-cleanup`
+finalizer. A missing API token Secret skips the revert with a log (the
+settings carry on inside Zabbix until the instance is manually reset);
+a reachable-but-failing API holds the deletion until the revert
+succeeds.
 
 ## Testing
 

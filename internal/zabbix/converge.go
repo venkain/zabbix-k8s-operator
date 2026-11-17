@@ -26,6 +26,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -90,6 +91,8 @@ func Converge(ctx context.Context, c client.Client, owner client.Object, desired
 		gvk = corev1.SchemeGroupVersion.WithKind("ServiceAccount")
 	case *corev1.Secret:
 		gvk = corev1.SchemeGroupVersion.WithKind("Secret")
+	case *networkingv1.NetworkPolicy:
+		gvk = networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy")
 	default:
 		return fmt.Errorf("unsupported owned object type %T", desired)
 	}
@@ -169,6 +172,21 @@ func ConvergeAll(ctx context.Context, c client.Client, z *zabbixv1alpha1.Zabbix,
 			MCPDeployment(z),
 			MCPService(z),
 		)
+	}
+
+	// NetworkPolicy hardening (spec.hardening.networkPolicy,
+	// default on): the lockdown of the auxiliary workloads —
+	// kube-state-metrics (in the placement namespace, which may differ
+	// from the resource's: cross-namespace objects rely on the
+	// operator-driven cleanup, same as the other cluster-metrics
+	// objects) and the MCP server (same namespace, owner-referenced).
+	if NetworkPolicyHardeningEnabled(z) {
+		if z.Spec.ClusterMetrics != nil {
+			objects = append(objects, KSMNetworkPolicy(z))
+		}
+		if MCPEnabled(z) {
+			objects = append(objects, MCPNetworkPolicy(z))
+		}
 	}
 
 	for _, obj := range objects {

@@ -21,6 +21,7 @@ package e2e
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -441,6 +442,23 @@ spec:
 		Expect(port).To(Equal("http"),
 			"the KSM service port must be named 'http' (template discovery contract)")
 
+		By("expecting the hardening egress policy on the KSM pods")
+		// Default-on NetworkPolicy hardening: KSM's only legitimate
+		// connections are DNS + the Kubernetes API server; everything
+		// else is denied. Egress-only: the server scrapes KSM THROUGH
+		// the API proxy, so ingress must stay open.
+		npTypes, err := kubectlJSONPath(namespaceFleet, "networkpolicy/zbx-kube-state-metrics-egress",
+			"{.spec.policyTypes}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(npTypes).To(ContainSubstring("Egress"), "the KSM policy must restrict egress")
+		Expect(npTypes).NotTo(ContainSubstring("Ingress"),
+			"the KSM policy must NOT restrict ingress (the scrape goes through the API proxy)")
+		egress, err := kubectlJSONPath(namespaceFleet, "networkpolicy/zbx-kube-state-metrics-egress",
+			"{.spec.egress}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(egress).To(ContainSubstring("kube-dns"), "the policy must allow cluster DNS")
+		Expect(egress).To(ContainSubstring("443"), "the policy must allow the HTTPS API-server lane")
+
 		By("expecting the monitor identity and its cluster-scoped RBAC")
 		// Namespaced identities live in the fleet namespace; the RBAC
 		// is cluster-scoped and needs no namespace.
@@ -488,6 +506,8 @@ spec:
 			g.Expect(depErr).To(HaveOccurred(), "the KSM deployment must be deleted by the disable path")
 			_, roleErr := runKubectl("", "get", "clusterrole/monitoring-zbx-kube-state-metrics")
 			g.Expect(roleErr).To(HaveOccurred(), "the ClusterRole must be deleted by the disable path")
+			_, npErr := runKubectl(namespaceFleet, "get", "networkpolicy/zbx-kube-state-metrics-egress")
+			g.Expect(npErr).To(HaveOccurred(), "the KSM hardening policy must be deleted by the disable path")
 			return true
 		}, "90s", "5s").Should(BeTrue())
 
@@ -565,6 +585,11 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "override RBAC object %s missing", obj)
 		}
 
+		By("expecting the hardening egress policy placed in the override namespace")
+		_, err = runKubectl(overrideNS, "get",
+			"networkpolicy/"+overridePrefix+"-kube-state-metrics-egress")
+		Expect(err).NotTo(HaveOccurred(), "the override-placed KSM egress policy is missing")
+
 		By("expecting no owner references on cross-namespace objects")
 		owners, err := kubectlJSONPath(overrideNS,
 			"deployment/"+overridePrefix+"-kube-state-metrics", "{.metadata.ownerReferences}")
@@ -631,11 +656,20 @@ spec:
 		}, "120s", "2s").Should(Succeed(), "the MCP server objects were never created")
 		assertRollout("deployment", "zbx-mcp-server")
 
+		By("expecting the hardening policy on the MCP pods")
+		// Default-on NetworkPolicy hardening: ingress on the MCP port
+		// only; egress restricted to DNS + the instance's frontend.
+		npTypes, err := kubectlJSONPath(namespaceFleet, "networkpolicy/zbx-mcp-server-policy",
+			"{.spec.policyTypes}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(npTypes).To(SatisfyAll(ContainSubstring("Ingress"), ContainSubstring("Egress")),
+			"the MCP policy must restrict both directions")
+
 		By("expecting the frontend URL and tool prefix wired into the container")
 		env, err := kubectlJSONPath(namespaceFleet, "deployment/zbx-mcp-server",
 			`{.spec.template.spec.containers[0].env[?(@.name=="ZBX_FRONTEND_URL")].value}`)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(env).To(Equal("http://zbx-frontend."+namespaceFleet+".svc:80/api_jsonrpc.php"))
+		Expect(env).To(Equal("http://zbx-frontend." + namespaceFleet + ".svc:80/api_jsonrpc.php"))
 		prefix, err := kubectlJSONPath(namespaceFleet, "deployment/zbx-mcp-server",
 			`{.spec.template.spec.containers[0].env[?(@.name=="ZBX_TOOL_PREFIX")].value}`)
 		Expect(err).NotTo(HaveOccurred())
@@ -688,6 +722,8 @@ spec:
 			g.Expect(depErr).To(HaveOccurred(), "the MCP deployment must be deleted by the disable path")
 			_, svcErr := runKubectl(namespaceFleet, "get", "service/zbx-mcp-server")
 			g.Expect(svcErr).To(HaveOccurred(), "the MCP service must be deleted by the disable path")
+			_, npErr := runKubectl(namespaceFleet, "get", "networkpolicy/zbx-mcp-server-policy")
+			g.Expect(npErr).To(HaveOccurred(), "the MCP hardening policy must be deleted by the disable path")
 			return true
 		}, "90s", "5s").Should(BeTrue())
 
@@ -699,6 +735,197 @@ spec:
 			return out
 		}, "60s", "5s").Should(BeEmpty(),
 			"disabling the feature must drop the AgentIntegrationReady condition")
+		assertCondition("Ready")
+	})
+
+	It("enforces the default-on hardening through the real Zabbix API", func() {
+		// The API-driven hardening (password policy, MFA) is the
+		// Zabbix-side state — the same class as the host registration
+		// the cluster-metrics spec parks on. Here it is verified END TO
+		// END with a REAL token: a fresh e2e stack boots with the
+		// factory Admin/zabbix credentials, so the suite can bootstrap
+		// a token over the API exactly the way a user would
+		// (user.login → token.create → token.generate) and then assert
+		// the operator's convergence against the instance itself.
+		//
+		// Sequence: plain stack (no spec.api) parks HardeningReady on
+		// APINotConfigured → real token wired in → 12/15 enforced →
+		// MFA opt-in/off cycle → password-policy opt-out resets 8/8 →
+		// everything removed again (pending state, stock settings).
+		By("bootstrapping a real API token from the factory Admin credentials")
+		var authToken string
+		apiCall := func(token, body string) (string, error) {
+			args := []string{"exec", "curl-metrics", "--", "curl", "-sk",
+				"-H", "Content-Type: application/json-rpc"}
+			if token != "" {
+				args = append(args, "-H", "Authorization: Bearer "+token)
+			}
+			args = append(args, "-d", body,
+				"http://zbx-frontend."+namespaceFleet+".svc:80/api_jsonrpc.php")
+			return runKubectl(operatorNamespace, args...)
+		}
+		// apiResult posts one JSON-RPC request and returns the decoded
+		// result member; a JSON-RPC error member fails the assertion
+		// WITH its text (an empty result otherwise hides the cause).
+		apiResult := func(g Gomega, token, body string, out any) {
+			raw, err := apiCall(token, body)
+			g.Expect(err).NotTo(HaveOccurred())
+			var resp struct {
+				Result json.RawMessage `json:"result"`
+				Error  *struct {
+					Message string `json:"message"`
+					Data    string `json:"data"`
+				} `json:"error"`
+			}
+			g.Expect(json.Unmarshal([]byte(raw), &resp)).To(Succeed(), "response: %s", raw)
+			if resp.Error != nil {
+				g.Expect(resp.Error).To(BeNil(), "the API rejected %s: %s: %s", body, resp.Error.Message, resp.Error.Data)
+			}
+			g.Expect(json.Unmarshal(resp.Result, out)).To(Succeed(), "result decode: %s", resp.Result)
+		}
+		Eventually(func(g Gomega) {
+			apiResult(g, "", `{"jsonrpc":"2.0","method":"user.login","params":{"username":"Admin","password":"zabbix"},"id":1}`, &authToken)
+			g.Expect(authToken).NotTo(BeEmpty(), "user.login must return a session id")
+		}, "120s", "5s").Should(Succeed(), "the frontend API never answered the login")
+
+		var tokenID string
+		var created struct {
+			Result struct {
+				TokenIDs []string `json:"tokenids"`
+			} `json:"result"`
+		}
+		Eventually(func(g Gomega) {
+			apiResult(g, authToken, `{"jsonrpc":"2.0","method":"token.create","params":{"name":"e2e-hardening"},"id":2}`, &created.Result)
+		}, "60s", "5s").Should(Succeed())
+		Expect(created.Result.TokenIDs).To(HaveLen(1))
+		tokenID = created.Result.TokenIDs[0]
+
+		var generated struct {
+			Result []struct {
+				Token string `json:"token"`
+			} `json:"result"`
+		}
+		Eventually(func(g Gomega) {
+			apiResult(g, authToken, `{"jsonrpc":"2.0","method":"token.generate","params":["`+tokenID+`"],"id":3}`, &generated.Result)
+		}, "60s", "5s").Should(Succeed())
+		Expect(generated.Result).To(HaveLen(1))
+		realToken := generated.Result[0].Token
+		Expect(realToken).NotTo(BeEmpty())
+
+		By("storing the real token in the API token Secret")
+		Expect(kubectlApplyString(`apiVersion: v1
+kind: Secret
+metadata:
+  name: zbx-api-token
+  namespace: ` + namespaceFleet + `
+data:
+  token: ` + base64.StdEncoding.EncodeToString([]byte(realToken)) + `
+`)).To(Succeed())
+
+		By("confirming the pending state BEFORE wiring spec.api")
+		// The default-on password policy cannot run without spec.api:
+		// the stack stays fully Ready while the condition names what
+		// is pending (NOT folded into the aggregate Ready).
+		Eventually(func(g Gomega) string {
+			out, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx",
+				`{.status.conditions[?(@.type=="HardeningReady")].reason}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "120s", "5s").Should(Equal("APINotConfigured"),
+			"without spec.api the API-driven hardening must park on APINotConfigured")
+
+		By("wiring spec.api and expecting the password policy enforced")
+		_, err := runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
+			{"op":"add","path":"/spec/api","value":{"tokenSecretRef":{"name":"zbx-api-token","key":"token"}}}
+		]`)
+		Expect(err).NotTo(HaveOccurred())
+		assertCondition("HardeningReady")
+		finalizers, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx", "{.metadata.finalizers}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(finalizers).To(ContainSubstring("hardening-cleanup"),
+			"the default-on password policy must add the hardening cleanup finalizer")
+
+		By("asserting 12/15 on the instance itself (authentication.get)")
+		readAuth := func(g Gomega) map[string]string {
+			out, err := apiCall(realToken, `{"jsonrpc":"2.0","method":"authentication.get","params":{},"id":4}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			var resp struct {
+				Result map[string]string `json:"result"`
+			}
+			g.Expect(json.Unmarshal([]byte(out), &resp)).To(Succeed(), "authentication.get response: %s", out)
+			return resp.Result
+		}
+		Eventually(func(g Gomega) string {
+			auth := readAuth(g)
+			return auth["passwd_min_length"] + "/" + auth["passwd_check_rules"]
+		}, "120s", "5s").Should(Equal("12/15"),
+			"the operator must enforce the hardened defaults (min length 12, all check rules)")
+
+		By("opting into MFA and expecting the TOTP method + global switch")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
+			{"op":"add","path":"/spec/hardening","value":{"mfa":{}}}
+		]`)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) string {
+			return readAuth(g)["mfa_status"]
+		}, "120s", "5s").Should(Equal("1"), "the operator must switch the global MFA on")
+		Eventually(func(g Gomega) string {
+			out, err := apiCall(realToken, `{"jsonrpc":"2.0","method":"mfa.get","params":{},"id":5}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "120s", "5s").Should(ContainSubstring(`"name":"zbx-totp"`),
+			"the operator must ensure the instance's own TOTP method")
+
+		By("removing the MFA block and expecting the revert")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
+			{"op":"remove","path":"/spec/hardening/mfa"}
+		]`)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) string {
+			return readAuth(g)["mfa_status"]
+		}, "120s", "5s").Should(Equal("0"), "removing the MFA block must switch the global MFA off")
+		Eventually(func(g Gomega) string {
+			out, err := apiCall(realToken, `{"jsonrpc":"2.0","method":"mfa.get","params":{},"id":6}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "120s", "5s").ShouldNot(ContainSubstring("zbx-totp"),
+			"removing the MFA block must delete the operator's method")
+
+		By("opting the password policy out and expecting the stock reset")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
+			{"op":"add","path":"/spec/hardening/passwordPolicy","value":{"enabled":false}}
+		]`)
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) string {
+			auth := readAuth(g)
+			return auth["passwd_min_length"] + "/" + auth["passwd_check_rules"]
+		}, "120s", "5s").Should(Equal("8/8"),
+			"opting out must reset the policy to the stock values the operator can claim")
+
+		By("wiring everything off and expecting the pending condition back")
+		_, err = runKubectl(namespaceFleet, "patch", "zabbix", "zbx", "--type", "json", "-p", `[
+			{"op":"remove","path":"/spec/hardening"},
+			{"op":"remove","path":"/spec/api"}
+		]`)
+		Expect(err).NotTo(HaveOccurred())
+		// spec.hardening is gone → the default-on password policy is
+		// requested again, but with no spec.api it cannot run: the
+		// condition parks on APINotConfigured while the stack stays
+		// Ready (and the settings stay at the stock values). The
+		// hardening finalizer STAYS: the password policy is default-on,
+		// so the deletion path keeps its revert hook (it unwinds with a
+		// log when no token Secret exists).
+		Eventually(func(g Gomega) string {
+			out, err := kubectlJSONPath(namespaceFleet, "zabbix/zbx",
+				`{.status.conditions[?(@.type=="HardeningReady")].reason}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			return out
+		}, "120s", "5s").Should(Equal("APINotConfigured"),
+			"without spec.api the API-driven hardening must park on APINotConfigured")
+		finalizers, err = kubectlJSONPath(namespaceFleet, "zabbix/zbx", "{.metadata.finalizers}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(finalizers).To(ContainSubstring("hardening-cleanup"),
+			"the default-on password policy keeps the cleanup finalizer (the deletion path unwinds it)")
 		assertCondition("Ready")
 	})
 
