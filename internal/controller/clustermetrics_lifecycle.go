@@ -218,6 +218,11 @@ func (r *ZabbixReconciler) removeClusterMetricsObjects(ctx context.Context, z *z
 		zabbix.MonitorTokenSecret(z),
 		zabbix.ClusterMetricsClusterRole(z),
 		zabbix.ClusterMetricsClusterRoleBinding(z),
+		// Hardening: the KSM egress policy is cross-namespace and
+		// owner-referenced — it is removed here on the disable and
+		// deletion paths. (The MCP policy lives in the resource's own
+		// namespace and dies with the owner reference.)
+		zabbix.KSMNetworkPolicy(z),
 	} {
 		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("deleting cluster-metrics object %s %s: %w", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), err)

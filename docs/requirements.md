@@ -60,6 +60,7 @@ and third-party tutorials are never normative and are not cited here.
 | D3 | v1 components | **Server (HA) + frontend + web service + proxy group** | The core monitoring story; everything else is additive later |
 | D4 | Version support | **8.0 + 7.0 LTS install/run; upgrades later** | Cross-version DB migrations are the riskiest feature; defer until the core reconcile loop is proven |
 | D5 | References policy | This repository references no other Zabbix deployment tooling | Keeps the project self-contained; research material lives outside |
+| D6 | Platform hardening | **`spec.hardening` default-on with per-knob opt-outs: password policy (min length 12, all check rules) + NetworkPolicy egress lockdown of auxiliary workloads enforced by default; TOTP MFA opt-in. API-driven parts require `spec.api` and are reported pending (HardeningReady, outside the aggregate Ready) without it** | A monitoring platform holds incident data and can page people — the default posture should be the safe one (secure-by-default, explicit opt-out), mirroring how the operator treats resource guarantees. Wire contracts verified against live Zabbix 8.0 (`authentication.*`, `mfa.*`); reverts only touch state the operator itself applied (status-memoized values), never hand-tuned settings |
 
 ## Component feature matrix (v1 target, Zabbix 8.0)
 
