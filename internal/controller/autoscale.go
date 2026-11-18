@@ -15,6 +15,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// Direction constants for autoscaling decisions.
+const (
+	DirectionUp   = "up"
+	DirectionDown = "down"
+	DirectionNone = "none"
+)
+
 // Autoscaler is the shared scaling engine. It evaluates metrics,
 // applies cooldown/hysteresis, and returns the desired replica count.
 type Autoscaler struct {
@@ -55,7 +62,7 @@ func (a *Autoscaler) Evaluate(
 	lastScaleDirection string,
 	lastScaleReason string,
 ) *ScaleResult {
-	log := log.FromContext(ctx).WithValues("component", a.Component)
+	l := log.FromContext(ctx).WithValues("component", a.Component)
 
 	result := &ScaleResult{
 		ConditionActive: autoscaling.Enabled,
@@ -79,10 +86,10 @@ func (a *Autoscaler) Evaluate(
 
 	// Cooldown check: skip if last scale was within cooldownPeriod.
 	cooldown := parseDurationDefault(autoscaling.CooldownPeriod, 5*time.Minute)
-	if lastScaleTime != nil && now.Time.Sub(lastScaleTime.Time) < cooldown {
+	if lastScaleTime != nil && now.Sub(lastScaleTime.Time) < cooldown {
 		result.ConditionReason = "CooldownActive"
-		result.ConditionMessage = fmt.Sprintf("last scale at %s, cooldown %s", lastScaleTime.Time.Format(time.RFC3339), cooldown)
-		log.V(1).Info("autoscaling skipped: cooldown active", "lastScale", lastScaleTime, "cooldown", cooldown)
+		result.ConditionMessage = fmt.Sprintf("last scale at %s, cooldown %s", lastScaleTime.Format(time.RFC3339), cooldown)
+		l.V(1).Info("autoscaling skipped: cooldown active", "lastScale", lastScaleTime.Format(time.RFC3339), "cooldown", cooldown)
 		return result
 	}
 
@@ -122,48 +129,16 @@ func (a *Autoscaler) Evaluate(
 	scaleDownStabilization := parseDurationDefault(autoscaling.ScaleDownStabilization, 10*time.Minute)
 
 	// Determine direction and apply hysteresis/stabilization.
-	direction := "none"
-	shouldScale := false
-	reason := ""
-
-	if desiredReplicas > currentReplicas {
-		direction = "up"
-		// Hysteresis: require sustained scale-up signal.
-		if lastScaleDirection == "up" || desiredReplicas > currentReplicas {
-			if lastScaleTime != nil && now.Time.Sub(lastScaleTime.Time) >= scaleUpStabilization {
-				shouldScale = true
-				reason = fmt.Sprintf("scale-up condition sustained for %s; metric votes: %s", scaleUpStabilization, strings.Join(reasons, ", "))
-			} else {
-				waitTime := scaleUpStabilization
-				if lastScaleTime != nil {
-					waitTime = scaleUpStabilization - now.Time.Sub(lastScaleTime.Time)
-				}
-				reason = fmt.Sprintf("scale-up condition building (need %s more); votes: %s", waitTime, strings.Join(reasons, ", "))
-			}
-		} else {
-			reason = fmt.Sprintf("scale-up signal detected; starting stabilization window (%s); votes: %s", scaleUpStabilization, strings.Join(reasons, ", "))
-		}
-	} else if desiredReplicas < currentReplicas {
-		direction = "down"
-		// Hysteresis: require sustained scale-down signal with wider window
-		if lastScaleDirection == "down" || desiredReplicas < currentReplicas {
-			if lastScaleTime != nil && now.Time.Sub(lastScaleTime.Time) >= scaleDownStabilization {
-				shouldScale = true
-				reason = fmt.Sprintf("scale-down condition sustained for %s; metric votes: %s", scaleDownStabilization, strings.Join(reasons, ", "))
-			} else {
-				waitTime := scaleDownStabilization
-				if lastScaleTime != nil {
-					waitTime = scaleDownStabilization - now.Time.Sub(lastScaleTime.Time)
-				}
-				reason = fmt.Sprintf("scale-down condition building (need %s more); votes: %s", waitTime, strings.Join(reasons, ", "))
-			}
-		} else {
-			reason = fmt.Sprintf("scale-down signal detected; starting stabilization window (%s); votes: %s", scaleDownStabilization, strings.Join(reasons, ", "))
-		}
-	} else {
-		direction = "none"
-		reason = "desired replicas equals current; no scaling needed"
-	}
+	var direction string
+	var shouldScale bool
+	var reason string
+	direction, shouldScale, reason = a.computeDirectionAndScale(
+		desiredReplicas, currentReplicas,
+		lastScaleDirection,
+		lastScaleTime,
+		scaleUpStabilization, scaleDownStabilization,
+		reasons,
+	)
 
 	result.Direction = direction
 	result.ShouldScale = shouldScale
@@ -225,10 +200,7 @@ func (a *Autoscaler) computeDesiredReplicas(
 			return currentReplicas
 		}
 		ratio := actual / target
-		desired := int32(float64(currentReplicas) * ratio)
-		if desired < currentReplicas+1 {
-			desired = currentReplicas + 1
-		}
+		desired := max(int32(float64(currentReplicas)*ratio), currentReplicas+1)
 		return desired
 
 	case v1alpha1.AutoscalingMetricRequestRate:
@@ -248,10 +220,7 @@ func (a *Autoscaler) computeDesiredReplicas(
 			return currentReplicas
 		}
 		ratio := cnpgMetrics.QueryLatencyP99 / target
-		desired := int32(float64(currentReplicas) * ratio)
-		if desired < currentReplicas+1 {
-			desired = currentReplicas + 1
-		}
+		desired := max(int32(float64(currentReplicas)*ratio), currentReplicas+1)
 		return desired
 
 	default:
@@ -260,6 +229,45 @@ func (a *Autoscaler) computeDesiredReplicas(
 }
 
 // parseDurationDefault parses a duration string (e.g., "5m", "1h") or returns default.
+
+// computeDirectionAndScale encapsulates the direction/scale logic to
+// avoid linter false positives on variable assignment.
+func (a *Autoscaler) computeDirectionAndScale(
+	desiredReplicas, currentReplicas int32,
+	lastScaleDirection string,
+	lastScaleTime *metav1.Time,
+	scaleUpStabilization, scaleDownStabilization time.Duration,
+	reasons []string,
+) (direction string, shouldScale bool, reason string) {
+	if desiredReplicas > currentReplicas {
+		// Scale up
+		if lastScaleDirection == DirectionUp || desiredReplicas > currentReplicas {
+			if lastScaleTime != nil && time.Since(lastScaleTime.Time) >= scaleUpStabilization {
+				return DirectionUp, true, fmt.Sprintf("scale-up condition sustained for %s; metric votes: %s", scaleUpStabilization, strings.Join(reasons, ", "))
+			}
+			waitTime := scaleUpStabilization
+			if lastScaleTime != nil {
+				waitTime = scaleUpStabilization - time.Since(lastScaleTime.Time)
+			}
+			return DirectionUp, false, fmt.Sprintf("scale-up condition building (need %s more); votes: %s", waitTime, strings.Join(reasons, ", "))
+		}
+		return DirectionUp, false, fmt.Sprintf("scale-up signal detected; starting stabilization window (%s); votes: %s", scaleUpStabilization, strings.Join(reasons, ", "))
+	} else if desiredReplicas < currentReplicas {
+		if lastScaleDirection == DirectionDown || desiredReplicas < currentReplicas {
+			if lastScaleTime != nil && time.Since(lastScaleTime.Time) >= scaleDownStabilization {
+				return DirectionDown, true, fmt.Sprintf("scale-down condition sustained for %s; metric votes: %s", scaleDownStabilization, strings.Join(reasons, ", "))
+			}
+			waitTime := scaleDownStabilization
+			if lastScaleTime != nil {
+				waitTime = scaleDownStabilization - time.Since(lastScaleTime.Time)
+			}
+			return DirectionDown, false, fmt.Sprintf("scale-down condition building (need %s more); votes: %s", waitTime, strings.Join(reasons, ", "))
+		}
+		return DirectionDown, false, fmt.Sprintf("scale-down signal detected; starting stabilization window (%s); votes: %s", scaleDownStabilization, strings.Join(reasons, ", "))
+	}
+	return DirectionNone, false, "desired replicas equals current; no scaling needed"
+}
+
 func parseDurationDefault(s string, defaultVal time.Duration) time.Duration {
 	if s == "" {
 		return defaultVal

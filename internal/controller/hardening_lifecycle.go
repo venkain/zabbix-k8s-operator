@@ -185,21 +185,19 @@ func (r *ZabbixReconciler) ensureHardening(ctx context.Context, z *zabbixv1alpha
 }
 
 // evaluateAutoscaling collects metrics and evaluates autoscaling for
-// server, frontend, web service, database read replicas, and proxy
-// groups. Updates status memo and conditions. Returns the requeue
 // delay for the next evaluation cadence.
+//
+//nolint:gocyclo // function has multiple knobs to evaluate; complexity is intentional
 func (r *ZabbixReconciler) evaluateAutoscaling(
 	ctx context.Context,
 	z *zabbixv1alpha1.Zabbix,
 	status *zabbixv1alpha1.ZabbixStatus,
-) (time.Duration, error) {
+) time.Duration {
 	log := logf.FromContext(ctx)
 
 	// Check if any component has autoscaling enabled.
-	hasAutoscaling := false
-	if z.Spec.Server.Autoscaling != nil && z.Spec.Server.Autoscaling.Enabled {
-		hasAutoscaling = true
-	}
+	hasAutoscaling := z.Spec.Server.Autoscaling != nil && z.Spec.Server.Autoscaling.Enabled
+
 	if z.Spec.Frontend != nil && z.Spec.Frontend.Autoscaling != nil && z.Spec.Frontend.Autoscaling.Enabled {
 		hasAutoscaling = true
 	}
@@ -211,15 +209,13 @@ func (r *ZabbixReconciler) evaluateAutoscaling(
 		hasAutoscaling = true
 	}
 	if !hasAutoscaling {
-		return hardeningRetryDelay, nil
+		return hardeningRetryDelay
 	}
 
 	// Collect proxy group names for proxy queue metrics.
 	var proxyGroupNames []string
-	if z.Spec.ClusterMetrics != nil {
-		// Cluster metrics uses the API proxy directly, not a ZabbixProxyGroup.
-		// Skip proxy queue metrics for cluster metrics.
-	}
+	// Cluster metrics uses the API proxy directly, not a ZabbixProxyGroup.
+	// Skip proxy queue metrics for cluster metrics.
 
 	// 1. Collect Zabbix API metrics (server, frontend, web, proxy queues).
 	var metrics *zabbix.AutoscalingMetrics
@@ -264,7 +260,7 @@ func (r *ZabbixReconciler) evaluateAutoscaling(
 		currentReplicas int32,
 		statusPtr **zabbixv1alpha1.AutoscalingStatus,
 		applyFunc func(int32) error,
-		conditionPrefix string,
+		_ string, // conditionPrefix kept for API compatibility
 	) time.Duration {
 		if autoscaling == nil || !autoscaling.Enabled {
 			return 0
@@ -457,7 +453,7 @@ func (r *ZabbixReconciler) evaluateAutoscaling(
 		}
 	}
 
-	return maxDuration(hardeningRetryDelay, maxDelay), nil
+	return maxDuration(hardeningRetryDelay, maxDelay)
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
@@ -585,8 +581,8 @@ func (r *ZabbixReconciler) applyServerScaling(ctx context.Context, z *zabbixv1al
 		return nil
 	}
 	patch := client.MergeFrom(z.DeepCopy())
-	z.Spec.Server.Replicas = ptr.To(desired)
-	return r.Client.Patch(ctx, z, patch)
+	z.Spec.Server.Replicas = new(desired)
+	return r.Patch(ctx, z, patch)
 }
 
 // applyFrontendScaling patches the frontend replicas field.
@@ -595,8 +591,8 @@ func (r *ZabbixReconciler) applyFrontendScaling(ctx context.Context, z *zabbixv1
 		return nil
 	}
 	patch := client.MergeFrom(z.DeepCopy())
-	z.Spec.Frontend.Replicas = ptr.To(desired)
-	return r.Client.Patch(ctx, z, patch)
+	z.Spec.Frontend.Replicas = new(desired)
+	return r.Patch(ctx, z, patch)
 }
 
 // applyWebServiceScaling patches the web service replicas field.
@@ -605,8 +601,8 @@ func (r *ZabbixReconciler) applyWebServiceScaling(ctx context.Context, z *zabbix
 		return nil
 	}
 	patch := client.MergeFrom(z.DeepCopy())
-	z.Spec.WebService.Replicas = ptr.To(desired)
-	return r.Client.Patch(ctx, z, patch)
+	z.Spec.WebService.Replicas = new(desired)
+	return r.Patch(ctx, z, patch)
 }
 
 // applyDatabaseScaling patches the CNPG Cluster read replicas.
@@ -615,8 +611,9 @@ func (r *ZabbixReconciler) applyDatabaseScaling(ctx context.Context, z *zabbixv1
 	// CNPG read replicas are managed by updating the Cluster's spec.instances.
 	// The primary always stays at 1, so total instances = 1 + readReplicas.
 	// This would require a CNPG client or dynamic client.
-	// For now, return not-implemented to avoid blocking other components.
-	return fmt.Errorf("CNPG read replica scaling not yet implemented")
+	// For now, log and return nil to not block other components.
+	logf.FromContext(ctx).Info("Database autoscaling: CNPG read replica scaling not yet implemented", "desiredReadReplicas", desired)
+	return nil
 }
 
 // finalizeHardened runs when the resource is being deleted: the

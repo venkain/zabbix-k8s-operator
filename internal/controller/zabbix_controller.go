@@ -317,10 +317,7 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// compute desired replicas for server, frontend, web service,
 	// database read replicas, and proxy groups. Updates status memo
 	// and AutoscalingActive/AutoscalingPaused conditions.
-	autoscalingDelay, err := r.evaluateAutoscaling(ctx, &z, status)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("evaluating autoscaling: %w", err)
-	}
+	autoscalingDelay := r.evaluateAutoscaling(ctx, &z, status)
 	requeueDelay = foldRequeueDelays(requeueDelay, autoscalingDelay)
 
 	return persistStatus(ctx, r.Client, &z, *status, requeueDelay)
