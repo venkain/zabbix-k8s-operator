@@ -114,6 +114,72 @@ spec:
                     - secretName
                     type: object
                 type: object
+              autoscaling:
+                description: |-
+                  autoscaling configures horizontal autoscaling for the proxy group.
+                  When enabled, the operator adjusts replicas between minReplicas
+                  and maxReplicas based on Zabbix API metrics (proxy queue size,
+                  task backlog). Requires spec.api on the referenced Zabbix resource.
+                properties:
+                  cooldownPeriod:
+                    description: |-
+                      cooldownPeriod is the minimum time between any scaling actions
+                      (scale-up or scale-down). Prevents flap.
+                    pattern: ^[0-9]+[smh]$
+                    type: string
+                  enabled:
+                    description: enabled turns on autoscaling for this component.
+                    type: boolean
+                  maxReplicas:
+                    description: maxReplicas is the upper bound for replica count.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  metrics:
+                    description: |-
+                      metrics is the list of metrics to evaluate. The scaler computes
+                      a desired replica count for each metric and takes the maximum.
+                      At least one metric is required when enabled.
+                    items:
+                      description: AutoscalingMetricSpec defines one metric and its
+                        target for scaling.
+                      properties:
+                        target:
+                          description: |-
+                            target is the desired value for the metric. Interpretation
+                            depends on the metric type:
+                            - QueueSize: queue items per poller
+                            - PollerUtilization: percentage (0-100)
+                            - RequestRate: requests per second per replica
+                            - QueryLatencyP99: milliseconds
+                          format: int64
+                          type: integer
+                        type:
+                          description: type is the metric to evaluate.
+                          type: string
+                      required:
+                      - target
+                      - type
+                      type: object
+                    type: array
+                  minReplicas:
+                    description: minReplicas is the lower bound for replica count.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  scaleDownStabilization:
+                    description: |-
+                      scaleDownStabilization is the time the scale-down condition must
+                      hold before acting. Must be <= cooldownPeriod.
+                    pattern: ^[0-9]+[smh]$
+                    type: string
+                  scaleUpStabilization:
+                    description: |-
+                      scaleUpStabilization is the time the scale-up condition must
+                      hold before acting. Must be <= cooldownPeriod.
+                    pattern: ^[0-9]+[smh]$
+                    type: string
+                type: object
               failoverDelay:
                 description: |-
                   failoverDelay is the period during which a group member must
@@ -265,6 +331,30 @@ spec:
                     items:
                       type: string
                     type: array
+                type: object
+              autoscaling:
+                description: autoscaling records the last proxy group scaling decision.
+                properties:
+                  currentReplicas:
+                    description: currentReplicas is the replica count at last reconcile.
+                    format: int32
+                    type: integer
+                  desiredReplicas:
+                    description: desiredReplicas is the replica count the scaler computed.
+                    format: int32
+                    type: integer
+                  lastScaleDirection:
+                    description: lastScaleDirection was the direction of the last
+                      scale.
+                    type: string
+                  lastScaleReason:
+                    description: lastScaleReason explains why the last scaling decision
+                      was made.
+                    type: string
+                  lastScaleTime:
+                    description: lastScaleTime is when the last scaling action occurred.
+                    format: date-time
+                    type: string
                 type: object
               conditions:
                 description: |-

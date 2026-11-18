@@ -410,6 +410,67 @@ spec:
                       for connection details. Preferred provider (high availability,
                       backups, and version upgrades are delegated to CloudNativePG).
                     properties:
+                      autoscaling:
+                        description: |-
+                          autoscaling configures read-replica autoscaling for the CNPG
+                          cluster. Only read replicas are scaled; the primary always stays
+                          at 1. Metrics are gathered from CNPG's metrics endpoint.
+                        properties:
+                          cooldownPeriod:
+                            description: cooldownPeriod is the minimum time between
+                              scaling actions.
+                            pattern: ^[0-9]+[smh]$
+                            type: string
+                          enabled:
+                            description: enabled turns on read-replica autoscaling.
+                            type: boolean
+                          maxReadReplicas:
+                            description: maxReadReplicas is the maximum number of
+                              read replicas.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          metrics:
+                            description: metrics is the list of metrics to evaluate.
+                            items:
+                              description: AutoscalingMetricSpec defines one metric
+                                and its target for scaling.
+                              properties:
+                                target:
+                                  description: |-
+                                    target is the desired value for the metric. Interpretation
+                                    depends on the metric type:
+                                    - QueueSize: queue items per poller
+                                    - PollerUtilization: percentage (0-100)
+                                    - RequestRate: requests per second per replica
+                                    - QueryLatencyP99: milliseconds
+                                  format: int64
+                                  type: integer
+                                type:
+                                  description: type is the metric to evaluate.
+                                  type: string
+                              required:
+                              - target
+                              - type
+                              type: object
+                            type: array
+                          minReadReplicas:
+                            description: minReadReplicas is the minimum number of
+                              read replicas.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                          scaleDownStabilization:
+                            description: scaleDownStabilization is the time the scale-down
+                              condition must hold.
+                            pattern: ^[0-9]+[smh]$
+                            type: string
+                          scaleUpStabilization:
+                            description: scaleUpStabilization is the time the scale-up
+                              condition must hold.
+                            pattern: ^[0-9]+[smh]$
+                            type: string
+                        type: object
                       clusterName:
                         description: |-
                           clusterName is the name of an existing CloudNativePG Cluster in the
@@ -442,6 +503,72 @@ spec:
                 description: frontend configures the Zabbix frontend. Deployed by
                   default.
                 properties:
+                  autoscaling:
+                    description: |-
+                      autoscaling configures horizontal autoscaling for the frontend.
+                      When enabled, the operator adjusts replicas between minReplicas
+                      and maxReplicas based on HTTP request rate metrics (nginx
+                      exporter sidecar deployed when autoscaling is enabled).
+                    properties:
+                      cooldownPeriod:
+                        description: |-
+                          cooldownPeriod is the minimum time between any scaling actions
+                          (scale-up or scale-down). Prevents flap.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                      enabled:
+                        description: enabled turns on autoscaling for this component.
+                        type: boolean
+                      maxReplicas:
+                        description: maxReplicas is the upper bound for replica count.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      metrics:
+                        description: |-
+                          metrics is the list of metrics to evaluate. The scaler computes
+                          a desired replica count for each metric and takes the maximum.
+                          At least one metric is required when enabled.
+                        items:
+                          description: AutoscalingMetricSpec defines one metric and
+                            its target for scaling.
+                          properties:
+                            target:
+                              description: |-
+                                target is the desired value for the metric. Interpretation
+                                depends on the metric type:
+                                - QueueSize: queue items per poller
+                                - PollerUtilization: percentage (0-100)
+                                - RequestRate: requests per second per replica
+                                - QueryLatencyP99: milliseconds
+                              format: int64
+                              type: integer
+                            type:
+                              description: type is the metric to evaluate.
+                              type: string
+                          required:
+                          - target
+                          - type
+                          type: object
+                        type: array
+                      minReplicas:
+                        description: minReplicas is the lower bound for replica count.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      scaleDownStabilization:
+                        description: |-
+                          scaleDownStabilization is the time the scale-down condition must
+                          hold before acting. Must be <= cooldownPeriod.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                      scaleUpStabilization:
+                        description: |-
+                          scaleUpStabilization is the time the scale-up condition must
+                          hold before acting. Must be <= cooldownPeriod.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                    type: object
                   env:
                     description: |-
                       env exposes additional environment variables to the frontend
@@ -817,6 +944,72 @@ spec:
                             type: string
                         type: object
                     type: object
+                  autoscaling:
+                    description: |-
+                      autoscaling configures horizontal autoscaling for the server.
+                      When enabled, the operator adjusts replicas between minReplicas
+                      and maxReplicas based on Zabbix API metrics (queue size, poller
+                      utilization). Requires spec.api for HA mode (replicas > 1).
+                    properties:
+                      cooldownPeriod:
+                        description: |-
+                          cooldownPeriod is the minimum time between any scaling actions
+                          (scale-up or scale-down). Prevents flap.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                      enabled:
+                        description: enabled turns on autoscaling for this component.
+                        type: boolean
+                      maxReplicas:
+                        description: maxReplicas is the upper bound for replica count.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      metrics:
+                        description: |-
+                          metrics is the list of metrics to evaluate. The scaler computes
+                          a desired replica count for each metric and takes the maximum.
+                          At least one metric is required when enabled.
+                        items:
+                          description: AutoscalingMetricSpec defines one metric and
+                            its target for scaling.
+                          properties:
+                            target:
+                              description: |-
+                                target is the desired value for the metric. Interpretation
+                                depends on the metric type:
+                                - QueueSize: queue items per poller
+                                - PollerUtilization: percentage (0-100)
+                                - RequestRate: requests per second per replica
+                                - QueryLatencyP99: milliseconds
+                              format: int64
+                              type: integer
+                            type:
+                              description: type is the metric to evaluate.
+                              type: string
+                          required:
+                          - target
+                          - type
+                          type: object
+                        type: array
+                      minReplicas:
+                        description: minReplicas is the lower bound for replica count.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      scaleDownStabilization:
+                        description: |-
+                          scaleDownStabilization is the time the scale-down condition must
+                          hold before acting. Must be <= cooldownPeriod.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                      scaleUpStabilization:
+                        description: |-
+                          scaleUpStabilization is the time the scale-up condition must
+                          hold before acting. Must be <= cooldownPeriod.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                    type: object
                   image:
                     description: image overrides the server container image.
                     properties:
@@ -1121,6 +1314,71 @@ spec:
                 description: webService configures the Zabbix web service. Deployed
                   by default.
                 properties:
+                  autoscaling:
+                    description: |-
+                      autoscaling configures horizontal autoscaling for the web service.
+                      When enabled, the operator adjusts replicas between minReplicas
+                      and maxReplicas based on HTTP request rate metrics.
+                    properties:
+                      cooldownPeriod:
+                        description: |-
+                          cooldownPeriod is the minimum time between any scaling actions
+                          (scale-up or scale-down). Prevents flap.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                      enabled:
+                        description: enabled turns on autoscaling for this component.
+                        type: boolean
+                      maxReplicas:
+                        description: maxReplicas is the upper bound for replica count.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      metrics:
+                        description: |-
+                          metrics is the list of metrics to evaluate. The scaler computes
+                          a desired replica count for each metric and takes the maximum.
+                          At least one metric is required when enabled.
+                        items:
+                          description: AutoscalingMetricSpec defines one metric and
+                            its target for scaling.
+                          properties:
+                            target:
+                              description: |-
+                                target is the desired value for the metric. Interpretation
+                                depends on the metric type:
+                                - QueueSize: queue items per poller
+                                - PollerUtilization: percentage (0-100)
+                                - RequestRate: requests per second per replica
+                                - QueryLatencyP99: milliseconds
+                              format: int64
+                              type: integer
+                            type:
+                              description: type is the metric to evaluate.
+                              type: string
+                          required:
+                          - target
+                          - type
+                          type: object
+                        type: array
+                      minReplicas:
+                        description: minReplicas is the lower bound for replica count.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      scaleDownStabilization:
+                        description: |-
+                          scaleDownStabilization is the time the scale-down condition must
+                          hold before acting. Must be <= cooldownPeriod.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                      scaleUpStabilization:
+                        description: |-
+                          scaleUpStabilization is the time the scale-up condition must
+                          hold before acting. Must be <= cooldownPeriod.
+                        pattern: ^[0-9]+[smh]$
+                        type: string
+                    type: object
                   image:
                     description: image overrides the web service container image.
                     properties:
@@ -1312,6 +1570,58 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              databaseAutoscaling:
+                description: databaseAutoscaling records the last CNPG read-replica
+                  scaling decision.
+                properties:
+                  currentReadReplicas:
+                    description: currentReadReplicas is the read replica count at
+                      last reconcile.
+                    format: int32
+                    type: integer
+                  desiredReadReplicas:
+                    description: desiredReadReplicas is the read replica count the
+                      scaler computed.
+                    format: int32
+                    type: integer
+                  lastScaleDirection:
+                    description: lastScaleDirection was the direction of the last
+                      scale.
+                    type: string
+                  lastScaleReason:
+                    description: lastScaleReason explains why the last scaling decision
+                      was made.
+                    type: string
+                  lastScaleTime:
+                    description: lastScaleTime is when the last scaling action occurred.
+                    format: date-time
+                    type: string
+                type: object
+              frontendAutoscaling:
+                description: frontendAutoscaling records the last frontend scaling
+                  decision.
+                properties:
+                  currentReplicas:
+                    description: currentReplicas is the replica count at last reconcile.
+                    format: int32
+                    type: integer
+                  desiredReplicas:
+                    description: desiredReplicas is the replica count the scaler computed.
+                    format: int32
+                    type: integer
+                  lastScaleDirection:
+                    description: lastScaleDirection was the direction of the last
+                      scale.
+                    type: string
+                  lastScaleReason:
+                    description: lastScaleReason explains why the last scaling decision
+                      was made.
+                    type: string
+                  lastScaleTime:
+                    description: lastScaleTime is when the last scaling action occurred.
+                    format: date-time
+                    type: string
+                type: object
               hardeningMFAMethodID:
                 description: |-
                   hardeningMFAMethodID records the id of the TOTP method
@@ -1335,6 +1645,30 @@ spec:
                   controller.
                 format: int64
                 type: integer
+              serverAutoscaling:
+                description: serverAutoscaling records the last server scaling decision.
+                properties:
+                  currentReplicas:
+                    description: currentReplicas is the replica count at last reconcile.
+                    format: int32
+                    type: integer
+                  desiredReplicas:
+                    description: desiredReplicas is the replica count the scaler computed.
+                    format: int32
+                    type: integer
+                  lastScaleDirection:
+                    description: lastScaleDirection was the direction of the last
+                      scale.
+                    type: string
+                  lastScaleReason:
+                    description: lastScaleReason explains why the last scaling decision
+                      was made.
+                    type: string
+                  lastScaleTime:
+                    description: lastScaleTime is when the last scaling action occurred.
+                    format: date-time
+                    type: string
+                type: object
               serverHA:
                 description: |-
                   serverHA reports the observed state of the server HA cluster
@@ -1376,6 +1710,31 @@ spec:
                       - status
                       type: object
                     type: array
+                type: object
+              webServiceAutoscaling:
+                description: webServiceAutoscaling records the last web service scaling
+                  decision.
+                properties:
+                  currentReplicas:
+                    description: currentReplicas is the replica count at last reconcile.
+                    format: int32
+                    type: integer
+                  desiredReplicas:
+                    description: desiredReplicas is the replica count the scaler computed.
+                    format: int32
+                    type: integer
+                  lastScaleDirection:
+                    description: lastScaleDirection was the direction of the last
+                      scale.
+                    type: string
+                  lastScaleReason:
+                    description: lastScaleReason explains why the last scaling decision
+                      was made.
+                    type: string
+                  lastScaleTime:
+                    description: lastScaleTime is when the last scaling action occurred.
+                    format: date-time
+                    type: string
                 type: object
             type: object
         required:

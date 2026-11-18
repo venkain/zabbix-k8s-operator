@@ -60,6 +60,13 @@ type ZabbixProxyGroupSpec struct {
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// autoscaling configures horizontal autoscaling for the proxy group.
+	// When enabled, the operator adjusts replicas between minReplicas
+	// and maxReplicas based on Zabbix API metrics (proxy queue size,
+	// task backlog). Requires spec.api on the referenced Zabbix resource.
+	// +optional
+	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
+
 	// failoverDelay is the period during which a group member must
 	// communicate with the Zabbix server to be considered online (see the
 	// official proxy_group failover_delay documentation). Time suffixes
@@ -174,6 +181,10 @@ type ZabbixProxyGroupStatus struct {
 	// server-side.
 	// +optional
 	APM *ProxyGroupAPMStatus `json:"apm,omitempty"`
+
+	// autoscaling records the last proxy group scaling decision.
+	// +optional
+	Autoscaling *AutoscalingStatus `json:"autoscaling,omitempty"`
 }
 
 // ProxyGroupAPMStatus records which members were last registered for
@@ -251,6 +262,18 @@ const (
 	// collection (the server-side apm object driving the members' OTLP
 	// listener) is enabled for all group members through the API.
 	ConditionAPMRegistered ProxyGroupConditionType = "APMRegistered"
+
+	// ConditionProxyGroupAutoscalingActive indicates the autoscaling
+	// feature is enabled and metrics are reachable. False when metrics
+	// are unavailable (e.g., missing API token on the referenced Zabbix
+	// resource).
+	ConditionProxyGroupAutoscalingActive ProxyGroupConditionType = "AutoscalingActive"
+
+	// ConditionProxyGroupAutoscalingPaused indicates autoscaling is
+	// temporarily paused due to a group state transition (e.g., member
+	// rollout via DisruptionBudget). While paused, the operator freezes
+	// replica changes until the transition completes.
+	ConditionProxyGroupAutoscalingPaused ProxyGroupConditionType = "AutoscalingPaused"
 )
 
 func init() {
