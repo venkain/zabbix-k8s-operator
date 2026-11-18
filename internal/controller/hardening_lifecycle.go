@@ -26,6 +26,7 @@ import (
 	"github.com/venkain/zabbix-k8s-operator/internal/zabbix"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -192,11 +193,271 @@ func (r *ZabbixReconciler) evaluateAutoscaling(
 	z *zabbixv1alpha1.Zabbix,
 	status *zabbixv1alpha1.ZabbixStatus,
 ) (time.Duration, error) {
-	// Autoscaling evaluation placeholder - full implementation in follow-up.
-	// For now, just return the standard hardening retry delay.
-	// The Autoscaler core logic is in internal/controller/autoscale.go
-	// and the types are defined in api/v1alpha1/*_types.go.
-	return hardeningRetryDelay, nil
+	log := logf.FromContext(ctx)
+
+	// Check if any component has autoscaling enabled.
+	hasAutoscaling := false
+	if z.Spec.Server.Autoscaling != nil && z.Spec.Server.Autoscaling.Enabled {
+		hasAutoscaling = true
+	}
+	if z.Spec.Frontend != nil && z.Spec.Frontend.Autoscaling != nil && z.Spec.Frontend.Autoscaling.Enabled {
+		hasAutoscaling = true
+	}
+	if z.Spec.WebService != nil && z.Spec.WebService.Autoscaling != nil && z.Spec.WebService.Autoscaling.Enabled {
+		hasAutoscaling = true
+	}
+	// DatabaseSpec is not a pointer, check CNPG field
+	if z.Spec.Database.CNPG != nil && z.Spec.Database.CNPG.Autoscaling != nil && z.Spec.Database.CNPG.Autoscaling.Enabled {
+		hasAutoscaling = true
+	}
+	if !hasAutoscaling {
+		return hardeningRetryDelay, nil
+	}
+
+	// Collect proxy group names for proxy queue metrics.
+	var proxyGroupNames []string
+	if z.Spec.ClusterMetrics != nil {
+		// Cluster metrics uses the API proxy directly, not a ZabbixProxyGroup.
+		// Skip proxy queue metrics for cluster metrics.
+	}
+
+	// 1. Collect Zabbix API metrics (server, frontend, web, proxy queues).
+	var metrics *zabbix.AutoscalingMetrics
+	var apiErr error
+	if z.Spec.API != nil {
+		token, err := apiToken(ctx, r.Client, z)
+		if err != nil {
+			log.Error(err, "Autoscaling: failed to get API token; Zabbix metrics unavailable")
+		} else {
+			metrics, apiErr = zabbix.CollectAutoscalingMetrics(
+				ctx, r.HTTP, zabbix.APIEndpoint(z), token, proxyGroupNames)
+			if apiErr != nil {
+				log.Error(apiErr, "Autoscaling: Zabbix metric collection failed; using partial results")
+			}
+		}
+	} else {
+		log.V(1).Info("Autoscaling: no spec.api; Zabbix API metrics unavailable")
+	}
+
+	// 2. Collect CNPG metrics for database autoscaling.
+	var cnpgMetrics *zabbix.CNPGScalingMetrics
+	if z.Spec.Database.CNPG != nil && z.Spec.Database.CNPG.Autoscaling != nil && z.Spec.Database.CNPG.Autoscaling.Enabled {
+		cnpgMetrics, _ = zabbix.CollectCNPGScalingMetrics(ctx, &zabbix.CNPGScalerConfig{
+			ClusterName: z.Spec.Database.CNPG.ClusterName,
+			Namespace:   z.Namespace,
+			KubeClient:  r.Client,
+			// PrometheusURL: "", // optional
+		})
+	}
+
+	// 3. Check if HA transition is in progress.
+	haTransition := r.isHATransitionInProgress(z)
+
+	// 4. Evaluate each component using the shared Autoscaler.
+	scaler := &Autoscaler{Client: r.Client}
+	var maxDelay time.Duration
+
+	// Helper to evaluate and apply scaling for a component.
+	evalAndApply := func(
+		component string,
+		autoscaling *zabbixv1alpha1.AutoscalingSpec,
+		currentReplicas int32,
+		statusPtr **zabbixv1alpha1.AutoscalingStatus,
+		applyFunc func(int32) error,
+		conditionPrefix string,
+	) time.Duration {
+		if autoscaling == nil || !autoscaling.Enabled {
+			return 0
+		}
+
+		var componentStatus *zabbixv1alpha1.AutoscalingStatus
+		if *statusPtr != nil {
+			componentStatus = *statusPtr
+		}
+
+		var lastScaleTime *metav1.Time
+		var lastScaleDirection, lastScaleReason string
+		if componentStatus != nil {
+			lastScaleTime = componentStatus.LastScaleTime
+			lastScaleDirection = componentStatus.LastScaleDirection
+			lastScaleReason = componentStatus.LastScaleReason
+		}
+
+		result := scaler.Evaluate(
+			context.Background(),
+			nil,
+			autoscaling,
+			metrics,
+			nil, // cnpgMetrics - passed separately for database
+			nil, // proxyGroupNames
+			haTransition,
+			currentReplicas,
+			lastScaleTime,
+			lastScaleDirection,
+			lastScaleReason,
+		)
+
+		// Set conditions on the main status.
+		activeCond := "AutoscalingActive"
+		pausedCond := "AutoscalingPaused"
+		if component != "server" {
+			activeCond = component + activeCond
+			pausedCond = component + pausedCond
+		}
+		if result.ConditionActive {
+			setCond(&status.Conditions, activeCond, metav1.ConditionTrue, result.ConditionReason, result.ConditionMessage, 0)
+		} else {
+			setCond(&status.Conditions, activeCond, metav1.ConditionFalse, result.ConditionReason, result.ConditionMessage, 0)
+		}
+		if result.ConditionPaused {
+			setCond(&status.Conditions, pausedCond, metav1.ConditionTrue, result.ConditionReason, result.ConditionMessage, 0)
+		} else {
+			dropCondition(&status.Conditions, pausedCond)
+		}
+
+		if result.ShouldScale {
+			if err := applyFunc(result.DesiredReplicas); err != nil {
+				log.Error(err, "Failed to apply scaling", "component", component)
+			} else {
+				log.Info("Applied autoscaling", "component", component, "replicas", result.DesiredReplicas)
+			}
+		}
+
+		if result.ConditionPaused {
+			return haRetryDelay
+		}
+		return 0
+	}
+
+	// Server autoscaling
+	if z.Spec.Server.Autoscaling != nil && z.Spec.Server.Autoscaling.Enabled {
+		current := ptr.Deref(z.Spec.Server.Replicas, int32(1))
+		if z.Status.ServerAutoscaling != nil {
+			current = z.Status.ServerAutoscaling.CurrentReplicas
+		}
+		if d := evalAndApply(
+			"server",
+			z.Spec.Server.Autoscaling,
+			current,
+			&status.ServerAutoscaling,
+			func(d int32) error { return r.applyServerScaling(ctx, z, d) },
+			"",
+		); d > maxDelay {
+			maxDelay = d
+		}
+	}
+
+	// Frontend autoscaling
+	if z.Spec.Frontend != nil && z.Spec.Frontend.Autoscaling != nil && z.Spec.Frontend.Autoscaling.Enabled {
+		current := ptr.Deref(z.Spec.Frontend.Replicas, int32(1))
+		if z.Status.FrontendAutoscaling != nil {
+			current = z.Status.FrontendAutoscaling.CurrentReplicas
+		}
+		if d := evalAndApply(
+			"frontend",
+			z.Spec.Frontend.Autoscaling,
+			current,
+			&status.FrontendAutoscaling,
+			func(d int32) error { return r.applyFrontendScaling(ctx, z, d) },
+			"Frontend",
+		); d > maxDelay {
+			maxDelay = d
+		}
+	}
+
+	// Web service autoscaling
+	if z.Spec.WebService != nil && z.Spec.WebService.Autoscaling != nil && z.Spec.WebService.Autoscaling.Enabled {
+		current := ptr.Deref(z.Spec.WebService.Replicas, int32(1))
+		if z.Status.WebServiceAutoscaling != nil {
+			current = z.Status.WebServiceAutoscaling.CurrentReplicas
+		}
+		if d := evalAndApply(
+			"webService",
+			z.Spec.WebService.Autoscaling,
+			current,
+			&status.WebServiceAutoscaling,
+			func(d int32) error { return r.applyWebServiceScaling(ctx, z, d) },
+			"WebService",
+		); d > maxDelay {
+			maxDelay = d
+		}
+	}
+
+	// Database (CNPG read replicas) autoscaling
+	if z.Spec.Database.CNPG != nil && z.Spec.Database.CNPG.Autoscaling != nil && z.Spec.Database.CNPG.Autoscaling.Enabled {
+		current := int32(0)
+		if z.Status.DatabaseAutoscaling != nil {
+			current = z.Status.DatabaseAutoscaling.CurrentReadReplicas
+		}
+
+		// Database uses CNPGAutoscalingStatus, so we need a separate evaluation
+		autoscaling := &zabbixv1alpha1.AutoscalingSpec{
+			Enabled:                z.Spec.Database.CNPG.Autoscaling.Enabled,
+			MinReplicas:            z.Spec.Database.CNPG.Autoscaling.MinReadReplicas,
+			MaxReplicas:            z.Spec.Database.CNPG.Autoscaling.MaxReadReplicas,
+			Metrics:                z.Spec.Database.CNPG.Autoscaling.Metrics,
+			CooldownPeriod:         z.Spec.Database.CNPG.Autoscaling.CooldownPeriod,
+			ScaleUpStabilization:   z.Spec.Database.CNPG.Autoscaling.ScaleUpStabilization,
+			ScaleDownStabilization: z.Spec.Database.CNPG.Autoscaling.ScaleDownStabilization,
+		}
+
+		var componentStatus *zabbixv1alpha1.CNPGAutoscalingStatus
+		if z.Status.DatabaseAutoscaling != nil {
+			componentStatus = z.Status.DatabaseAutoscaling
+		}
+
+		var lastScaleTime *metav1.Time
+		var lastScaleDirection, lastScaleReason string
+		if componentStatus != nil {
+			lastScaleTime = componentStatus.LastScaleTime
+			lastScaleDirection = componentStatus.LastScaleDirection
+			lastScaleReason = componentStatus.LastScaleReason
+		}
+
+		result := scaler.Evaluate(
+			context.Background(),
+			nil,
+			autoscaling,
+			metrics,
+			cnpgMetrics, // Pass CNPG metrics for database evaluation
+			nil,         // proxyGroupNames
+			haTransition,
+			current,
+			lastScaleTime,
+			lastScaleDirection,
+			lastScaleReason,
+		)
+
+		// Set conditions on the main status.
+		activeCond := "DatabaseAutoscalingActive"
+		pausedCond := "DatabaseAutoscalingPaused"
+		if result.ConditionActive {
+			setCond(&status.Conditions, activeCond, metav1.ConditionTrue, result.ConditionReason, result.ConditionMessage, 0)
+		} else {
+			setCond(&status.Conditions, activeCond, metav1.ConditionFalse, result.ConditionReason, result.ConditionMessage, 0)
+		}
+		if result.ConditionPaused {
+			setCond(&status.Conditions, pausedCond, metav1.ConditionTrue, result.ConditionReason, result.ConditionMessage, 0)
+		} else {
+			dropCondition(&status.Conditions, pausedCond)
+		}
+
+		if result.ShouldScale {
+			if err := r.applyDatabaseScaling(ctx, z, result.DesiredReplicas); err != nil {
+				log.Error(err, "Failed to apply database scaling", "component", "database")
+			} else {
+				log.Info("Applied autoscaling", "component", "database", "replicas", result.DesiredReplicas)
+			}
+		}
+
+		if result.ConditionPaused {
+			if haRetryDelay > maxDelay {
+				maxDelay = haRetryDelay
+			}
+		}
+	}
+
+	return maxDuration(hardeningRetryDelay, maxDelay), nil
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
@@ -316,6 +577,46 @@ func (r *ZabbixReconciler) revertHardeningAPIState(ctx context.Context, z *zabbi
 	logf.FromContext(ctx).Info("Disabled the operator-managed MFA", "method", zabbix.MFAMethodName(z.Name))
 	status.HardeningMFAMethodID = ""
 	return nil
+}
+
+// applyServerScaling patches the server replicas field.
+func (r *ZabbixReconciler) applyServerScaling(ctx context.Context, z *zabbixv1alpha1.Zabbix, desired int32) error {
+	if z.Spec.Server.Replicas == nil || *z.Spec.Server.Replicas == desired {
+		return nil
+	}
+	patch := client.MergeFrom(z.DeepCopy())
+	z.Spec.Server.Replicas = ptr.To(desired)
+	return r.Client.Patch(ctx, z, patch)
+}
+
+// applyFrontendScaling patches the frontend replicas field.
+func (r *ZabbixReconciler) applyFrontendScaling(ctx context.Context, z *zabbixv1alpha1.Zabbix, desired int32) error {
+	if z.Spec.Frontend == nil || z.Spec.Frontend.Replicas == nil || *z.Spec.Frontend.Replicas == desired {
+		return nil
+	}
+	patch := client.MergeFrom(z.DeepCopy())
+	z.Spec.Frontend.Replicas = ptr.To(desired)
+	return r.Client.Patch(ctx, z, patch)
+}
+
+// applyWebServiceScaling patches the web service replicas field.
+func (r *ZabbixReconciler) applyWebServiceScaling(ctx context.Context, z *zabbixv1alpha1.Zabbix, desired int32) error {
+	if z.Spec.WebService == nil || z.Spec.WebService.Replicas == nil || *z.Spec.WebService.Replicas == desired {
+		return nil
+	}
+	patch := client.MergeFrom(z.DeepCopy())
+	z.Spec.WebService.Replicas = ptr.To(desired)
+	return r.Client.Patch(ctx, z, patch)
+}
+
+// applyDatabaseScaling patches the CNPG Cluster read replicas.
+// This requires updating the CNPG Cluster resource directly.
+func (r *ZabbixReconciler) applyDatabaseScaling(ctx context.Context, z *zabbixv1alpha1.Zabbix, desired int32) error {
+	// CNPG read replicas are managed by updating the Cluster's spec.instances.
+	// The primary always stays at 1, so total instances = 1 + readReplicas.
+	// This would require a CNPG client or dynamic client.
+	// For now, return not-implemented to avoid blocking other components.
+	return fmt.Errorf("CNPG read replica scaling not yet implemented")
 }
 
 // finalizeHardened runs when the resource is being deleted: the

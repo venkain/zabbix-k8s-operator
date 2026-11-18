@@ -7,8 +7,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // CNPGScalingMetrics bundles CNPG read-replica metrics.
@@ -35,10 +34,8 @@ type CNPGScalerConfig struct {
 	ClusterName string
 	// Namespace is the cluster's namespace.
 	Namespace string
-	// RESTConfig is the Kubernetes REST config for API access.
-	RESTConfig *rest.Config
 	// KubeClient is the Kubernetes client for status subresources.
-	KubeClient kubernetes.Interface
+	KubeClient client.Client
 	// PrometheusURL is optional; if set, query Prometheus for advanced metrics.
 	PrometheusURL string
 	// PrometheusBearerToken is optional auth for Prometheus.
@@ -119,7 +116,7 @@ type cnpCluster struct {
 // parsed metrics. Currently returns a not-implemented error.
 //
 //nolint:unparam // placeholder always returns nil for first result
-func getCNPGCluster(ctx context.Context, k8s kubernetes.Interface, namespace, name string) (*cnpCluster, error) {
+func getCNPGCluster(ctx context.Context, k8s client.Client, namespace, name string) (*cnpCluster, error) {
 	_ = schema.GroupVersionResource{
 		Group:    "postgresql.cnpg.io",
 		Version:  "v1",
