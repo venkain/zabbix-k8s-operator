@@ -145,6 +145,51 @@ func callJSONRPC[T any](ctx context.Context, httpClient *http.Client, endpoint, 
 	return payload.Result, nil
 }
 
+// callRaw is a low-level JSON-RPC caller that returns the raw result
+// bytes (json.RawMessage). Use when the caller wants to unmarshal the
+// result into a specific type or when the response structure varies.
+func callRaw(ctx context.Context, httpClient *http.Client, endpoint, token, method string, params any) (json.RawMessage, error) {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	body, err := json.Marshal(jsonrpcRequest{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+		ID:      1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encoding %s request: %w", method, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("building %s request: %w", method, err)
+	}
+	req.Header.Set("Content-Type", "application/json-rpc")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("calling %s: %w", endpoint, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var payload jsonrpcEnvelope[json.RawMessage]
+	decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("calling %s: unexpected HTTP status %d", endpoint, resp.StatusCode)
+	}
+	if decodeErr != nil {
+		return nil, fmt.Errorf("decoding %s response: %w", method, decodeErr)
+	}
+	if payload.Error != nil {
+		return nil, fmt.Errorf("%s failed: %s: %s", method, payload.Error.Message, payload.Error.Data)
+	}
+	return payload.Result, nil
+}
+
 // hanodeResult is one hanode.get registry entry as returned by the API.
 // The string tags match the API's actual output format (integers arrive
 // quoted), validated against the lab instance.
@@ -172,6 +217,9 @@ const (
 	paramMacro      = "macro"
 	paramValue      = "value"
 	paramHostID     = "hostid"
+	paramProxyID    = "proxyid"
+	paramStatus     = "status"
+	paramType       = "type"
 )
 
 // FetchHANodes queries the HA node registry via hanode.get. The endpoint
