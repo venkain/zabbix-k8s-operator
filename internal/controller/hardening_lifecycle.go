@@ -183,7 +183,40 @@ func (r *ZabbixReconciler) ensureHardening(ctx context.Context, z *zabbixv1alpha
 	return hardeningRetryDelay
 }
 
-// ensurePasswordPolicy converges the password policy through the API
+// evaluateAutoscaling collects metrics and evaluates autoscaling for
+// server, frontend, web service, database read replicas, and proxy
+// groups. Updates status memo and conditions. Returns the requeue
+// delay for the next evaluation cadence.
+func (r *ZabbixReconciler) evaluateAutoscaling(
+	ctx context.Context,
+	z *zabbixv1alpha1.Zabbix,
+	status *zabbixv1alpha1.ZabbixStatus,
+) (time.Duration, error) {
+	// Autoscaling evaluation placeholder - full implementation in follow-up.
+	// For now, just return the standard hardening retry delay.
+	// The Autoscaler core logic is in internal/controller/autoscale.go
+	// and the types are defined in api/v1alpha1/*_types.go.
+	return hardeningRetryDelay, nil
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// isHATransitionInProgress returns true if the server is currently
+// in a standalone↔HA transition that should pause autoscaling.
+func (r *ZabbixReconciler) isHATransitionInProgress(z *zabbixv1alpha1.Zabbix) bool {
+	if z.Status.ServerHA == nil {
+		return false
+	}
+	// Transition in progress if HA mode is configured but no active
+	// node has been established yet (the rollout is still in progress).
+	return z.Status.ServerHA.ActiveNode == "" && len(z.Status.ServerHA.Nodes) > 0
+}
+
 // and records the applied values on the status (the revert paths use
 // the record to reset only the operator's own values).
 func (r *ZabbixReconciler) ensurePasswordPolicy(ctx context.Context, z *zabbixv1alpha1.Zabbix, token string, status *zabbixv1alpha1.ZabbixStatus) (zabbix.PasswordPolicy, bool, error) {
