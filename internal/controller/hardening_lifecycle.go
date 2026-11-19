@@ -26,6 +26,7 @@ import (
 	"github.com/venkain/zabbix-k8s-operator/internal/zabbix"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -608,11 +609,45 @@ func (r *ZabbixReconciler) applyWebServiceScaling(ctx context.Context, z *zabbix
 // applyDatabaseScaling patches the CNPG Cluster read replicas.
 // This requires updating the CNPG Cluster resource directly.
 func (r *ZabbixReconciler) applyDatabaseScaling(ctx context.Context, z *zabbixv1alpha1.Zabbix, desired int32) error {
-	// CNPG read replicas are managed by updating the Cluster's spec.instances.
-	// The primary always stays at 1, so total instances = 1 + readReplicas.
-	// This would require a CNPG client or dynamic client.
-	// For now, log and return nil to not block other components.
-	logf.FromContext(ctx).Info("Database autoscaling: CNPG read replica scaling not yet implemented", "desiredReadReplicas", desired)
+	cnpg := z.Spec.Database.CNPG
+	if cnpg == nil || cnpg.ClusterName == "" {
+		return nil // nothing to scale
+	}
+
+	cluster := &unstructured.Unstructured{}
+	cluster.SetAPIVersion("postgresql.cnpg.io/v1")
+	cluster.SetKind("Cluster")
+	cluster.SetNamespace(z.Namespace)
+	cluster.SetName(cnpg.ClusterName)
+
+	if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), cluster); err != nil {
+		if apierrors.IsNotFound(err) {
+			logf.FromContext(ctx).Info("CNPG cluster not found; cannot scale read replicas", "cluster", cnpg.ClusterName)
+			return nil
+		}
+		return fmt.Errorf("getting CNPG cluster %s: %w", cnpg.ClusterName, err)
+	}
+
+	instances := desired + 1 // primary + read replicas
+	current, found, err := unstructured.NestedInt64(cluster.Object, "spec", "instances")
+	if err != nil {
+		return fmt.Errorf("reading CNPG cluster spec.instances: %w", err)
+	}
+	if found && int32(current) == instances {
+		return nil // already at desired
+	}
+
+	desiredCluster := cluster.DeepCopy()
+	if err := unstructured.SetNestedField(desiredCluster.Object, instances+1, "spec", "instances"); err != nil {
+		return fmt.Errorf("setting CNPG cluster spec.instances: %w", err)
+	}
+
+	patch := client.MergeFrom(cluster)
+	if err := r.Patch(ctx, desiredCluster, patch); err != nil {
+		return fmt.Errorf("patching CNPG cluster spec.instances: %w", err)
+	}
+
+	logf.FromContext(ctx).Info("Scaled CNPG read replicas", "cluster", cnpg.ClusterName, "desiredReadReplicas", desired, "instances", instances)
 	return nil
 }
 
