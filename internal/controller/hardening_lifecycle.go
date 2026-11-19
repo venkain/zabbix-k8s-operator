@@ -24,6 +24,7 @@ import (
 
 	zabbixv1alpha1 "github.com/venkain/zabbix-k8s-operator/api/v1alpha1"
 	"github.com/venkain/zabbix-k8s-operator/internal/zabbix"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -167,6 +168,19 @@ func (r *ZabbixReconciler) ensureHardening(ctx context.Context, z *zabbixv1alpha
 		} else {
 			log.Info("Disabled the operator-managed MFA", "method", zabbix.MFAMethodName(z.Name))
 			status.HardeningMFAMethodID = ""
+		}
+	}
+
+	// --- API side: LDAP ----------------------------------------------
+	if z.Spec.LDAP != nil && z.Spec.LDAP.Enabled {
+		if z.Spec.API == nil {
+			pending = true
+			setCond(&status.Conditions, zabbixv1alpha1.ConditionHardeningReady, metav1.ConditionFalse,
+				"APINotConfigured", "LDAP requires spec.api (a Zabbix API token)", z.Generation)
+		} else if err := r.ensureLDAP(ctx, z, status); err != nil {
+			setCond(&status.Conditions, zabbixv1alpha1.ConditionHardeningReady, metav1.ConditionFalse,
+				"LDAPFailed", err.Error(), z.Generation)
+			return hardeningRetryDelay
 		}
 	}
 
@@ -573,6 +587,56 @@ func (r *ZabbixReconciler) revertHardeningAPIState(ctx context.Context, z *zabbi
 	}
 	logf.FromContext(ctx).Info("Disabled the operator-managed MFA", "method", zabbix.MFAMethodName(z.Name))
 	status.HardeningMFAMethodID = ""
+	return nil
+}
+
+// ensureLDAP converges LDAP authentication settings via the Zabbix API.
+// Reads the LDAP bind password from the Secret referenced by
+// spec.ldap.bindPasswordSecretRef.
+func (r *ZabbixReconciler) ensureLDAP(ctx context.Context, z *zabbixv1alpha1.Zabbix, status *zabbixv1alpha1.ZabbixStatus) error {
+	ldap := z.Spec.LDAP
+	if ldap == nil || !ldap.Enabled {
+		return nil
+	}
+	if z.Spec.API == nil {
+		// No API token available — cannot configure LDAP.
+		return nil
+	}
+
+	token, err := apiToken(ctx, r.Client, z)
+	if err != nil {
+		return err
+	}
+
+	// Read bind password from Secret if bindDN is set.
+	var bindPassword string
+	if ldap.BindDN != "" && ldap.BindPasswordSecretRef.Name != "" {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: z.Namespace,
+			Name:      ldap.BindPasswordSecretRef.Name,
+		}, secret); err != nil {
+			return fmt.Errorf("getting LDAP bind password secret %s: %w", ldap.BindPasswordSecretRef.Name, err)
+		}
+		key := ldap.BindPasswordSecretRef.Key
+		if key == "" {
+			key = "password"
+		}
+		bindPassword = string(secret.Data[key])
+	}
+
+	changed, err := zabbix.EnsureLDAP(ctx, r.HTTP, zabbix.APIEndpoint(z), token, ldap, bindPassword)
+	if err != nil {
+		return err
+	}
+
+	if changed {
+		logf.FromContext(ctx).Info("Enabled LDAP authentication via Zabbix API", "host", ldap.Host, "port", ldap.Port)
+		status.LDAPEnabled = true
+		status.LDAPHost = ldap.Host
+		status.LDAPPort = ldap.Port
+	}
+
 	return nil
 }
 

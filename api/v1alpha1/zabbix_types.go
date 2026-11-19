@@ -1015,6 +1015,18 @@ type ZabbixStatus struct {
 	// databaseAutoscaling records the last CNPG read-replica scaling decision.
 	// +optional
 	DatabaseAutoscaling *CNPGAutoscalingStatus `json:"databaseAutoscaling,omitempty"`
+
+	// ldapEnabled records whether LDAP authentication was last enabled.
+	// +optional
+	LDAPEnabled bool `json:"ldapEnabled,omitempty"`
+
+	// ldapHost records the LDAP host the operator last configured.
+	// +optional
+	LDAPHost string `json:"ldapHost,omitempty"`
+
+	// ldapPort records the LDAP port the operator last configured.
+	// +optional
+	LDAPPort int32 `json:"ldapPort,omitempty"`
 }
 
 // +kubebuilder:object:root=true
