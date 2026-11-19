@@ -91,3 +91,47 @@ spec:
   #   # mfa: {}                   # opt-in: presence enables TOTP MFA
   #     # hashFunction: sha512    # sha1 | sha256 | sha512
   #     # codeLength: 8           # 6 | 8
+
+# Optional (Zabbix 8.0+): autoscaling for server, frontend, web
+# service, and database read replicas. When enabled, the operator
+# adjusts replicas between min/max based on observed load metrics.
+# Requires spec.api for Zabbix API metrics (server, frontend, web
+# service) or CNPG metrics endpoint (database).
+# autoscaling:
+#   server:
+#     enabled: true
+#     minReplicas: 2
+#     maxReplicas: 6
+#     metrics:
+#       - type: QueueSize
+#         target: 100
+#       - type: PollerUtilization
+#         target: 70
+#     cooldownPeriod: 5m
+#   frontend:
+#     enabled: true
+#     minReplicas: 1
+#     maxReplicas: 10
+#     metrics:
+#       - type: RequestRate
+#         target: 1000
+#     cooldownPeriod: 3m
+#   webService:
+#     enabled: true
+#     minReplicas: 1
+#     maxReplicas: 4
+#     metrics:
+#       - type: RequestRate
+#         target: 500
+#     cooldownPeriod: 3m
+#   database:
+#     cnpg:
+#       clusterName: zabbix-db
+#       autoscaling:
+#         enabled: true
+#         minReadReplicas: 0
+#         maxReadReplicas: 3
+#         metrics:
+#           - type: QueryLatencyP99
+#             target: 500
+#         cooldownPeriod: 10m

@@ -43,13 +43,13 @@ func (r *ZabbixReconciler) ensureAPMDataSource(ctx context.Context, z *zabbixv1a
 
 	if z.Spec.TelemetryStorage == nil || !zabbix.SupportsTelemetry(z.Spec.Version) {
 		if err := r.clearAPMDataSource(ctx, z, status); err != nil {
-			setCond(&status.Conditions, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+			setCond(&status.Conditions, string(zabbixv1alpha1.ConditionDataSourceReady), metav1.ConditionFalse,
 				"DataSourceClearFailed", err.Error(), z.Generation)
 			return apmDataSourceRetryDelay
 		}
 		// Nothing of ours is left to clear: without the telemetry
 		// storage the data source is not an operator-owned concern.
-		dropCondition(&status.Conditions, zabbixv1alpha1.ConditionDataSourceReady)
+		dropCondition(&status.Conditions, string(zabbixv1alpha1.ConditionDataSourceReady))
 		return 0
 	}
 
@@ -57,27 +57,27 @@ func (r *ZabbixReconciler) ensureAPMDataSource(ctx context.Context, z *zabbixv1a
 		// No API token: the global data source cannot be managed. The
 		// frontend/server environment wiring keeps APM functional for
 		// instances that configure a data source themselves.
-		dropCondition(&status.Conditions, zabbixv1alpha1.ConditionDataSourceReady)
+		dropCondition(&status.Conditions, string(zabbixv1alpha1.ConditionDataSourceReady))
 		return 0
 	}
 
 	token, err := apiToken(ctx, r.Client, z)
 	if err != nil {
-		setCond(&status.Conditions, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+		setCond(&status.Conditions, string(zabbixv1alpha1.ConditionDataSourceReady), metav1.ConditionFalse,
 			"APITokenPending", err.Error(), z.Generation)
 		return apmDataSourceRetryDelay
 	}
 	endpoint := zabbix.APIEndpoint(z)
 	ds, err := zabbix.FetchAPMGlobalDB(ctx, r.HTTP, endpoint, token)
 	if err != nil {
-		setCond(&status.Conditions, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+		setCond(&status.Conditions, string(zabbixv1alpha1.ConditionDataSourceReady), metav1.ConditionFalse,
 			"APIUnreachable", err.Error(), z.Generation)
 		return apmDataSourceRetryDelay
 	}
 
 	username, password, err := clickHouseAPMCredentials(ctx, r.Client, z)
 	if err != nil {
-		setCond(&status.Conditions, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+		setCond(&status.Conditions, string(zabbixv1alpha1.ConditionDataSourceReady), metav1.ConditionFalse,
 			"CredentialsUnresolved", err.Error(), z.Generation)
 		return apmDataSourceRetryDelay
 	}
@@ -94,7 +94,7 @@ func (r *ZabbixReconciler) ensureAPMDataSource(ctx context.Context, z *zabbixv1a
 		// write-only password, so an unchanged data source is never
 		// rewritten (and never re-encrypts the password server-side).
 		if err := zabbix.UpdateAPMGlobalDB(ctx, r.HTTP, endpoint, token, password, desired); err != nil {
-			setCond(&status.Conditions, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionFalse,
+			setCond(&status.Conditions, string(zabbixv1alpha1.ConditionDataSourceReady), metav1.ConditionFalse,
 				"DataSourceUpdateFailed", err.Error(), z.Generation)
 			return apmDataSourceRetryDelay
 		}
@@ -102,7 +102,7 @@ func (r *ZabbixReconciler) ensureAPMDataSource(ctx context.Context, z *zabbixv1a
 	}
 	status.APMDataSourceURL = desired.URL
 	status.APMDataSourceDB = desired.Database
-	setCond(&status.Conditions, zabbixv1alpha1.ConditionDataSourceReady, metav1.ConditionTrue,
+	setCond(&status.Conditions, string(zabbixv1alpha1.ConditionDataSourceReady), metav1.ConditionTrue,
 		"DataSourceEnsured", fmt.Sprintf("global APM data source points at %s (%s)", desired.URL, desired.Database), z.Generation)
 	return apmDataSourceRetryDelay
 }

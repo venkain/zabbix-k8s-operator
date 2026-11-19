@@ -48,6 +48,12 @@ type CNPGDatabaseSpec struct {
 	// same namespace as the Zabbix resource.
 	// +required
 	ClusterName string `json:"clusterName"`
+
+	// autoscaling configures read-replica autoscaling for the CNPG
+	// cluster. Only read replicas are scaled; the primary always stays
+	// at 1. Metrics are gathered from CNPG's metrics endpoint.
+	// +optional
+	Autoscaling *CNPGAutoscalingSpec `json:"autoscaling,omitempty"`
 }
 
 // ExternalDatabaseSpec references a user-provided database Secret.
@@ -95,6 +101,13 @@ type ServerSpec struct {
 	// resources for the server container.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// autoscaling configures horizontal autoscaling for the server.
+	// When enabled, the operator adjusts replicas between minReplicas
+	// and maxReplicas based on Zabbix API metrics (queue size, poller
+	// utilization). Requires spec.api for HA mode (replicas > 1).
+	// +optional
+	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
 
 	// agent configures the Zabbix agent 2 sidecar running in each server
 	// pod (self-monitoring). Enabled by default.
@@ -145,6 +158,13 @@ type FrontendSpec struct {
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// autoscaling configures horizontal autoscaling for the frontend.
+	// When enabled, the operator adjusts replicas between minReplicas
+	// and maxReplicas based on HTTP request rate metrics (nginx
+	// exporter sidecar deployed when autoscaling is enabled).
+	// +optional
+	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
+
 	// service configures the Service fronting the frontend (the
 	// user-facing entry). In-cluster access is a ClusterIP Service by
 	// default; external exposure (NodePort/LoadBalancer) is opt-in. Any
@@ -185,6 +205,12 @@ type WebServiceSpec struct {
 	// resources for the web service container.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// autoscaling configures horizontal autoscaling for the web service.
+	// When enabled, the operator adjusts replicas between minReplicas
+	// and maxReplicas based on HTTP request rate metrics.
+	// +optional
+	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
 }
 
 // ClusterMetricsSpec configures the ingestion of Kubernetes cluster
@@ -329,6 +355,168 @@ type MFASpec struct {
 	CodeLength int `json:"codeLength,omitempty"`
 }
 
+// AutoscalingMetricType identifies the metric used for scaling decisions.
+type AutoscalingMetricType string
+
+const (
+	// AutoscalingMetricQueueSize scales based on Zabbix task queue length
+	// (items waiting for pollers/trappers). Target is queue items per poller.
+	AutoscalingMetricQueueSize AutoscalingMetricType = "QueueSize"
+
+	// AutoscalingMetricPollerUtilization scales based on poller busy
+	// percentage (0-100). Target is a percentage threshold.
+	AutoscalingMetricPollerUtilization AutoscalingMetricType = "PollerUtilization"
+
+	// AutoscalingMetricRequestRate scales based on HTTP request rate
+	// (requests per second per replica). Target is req/s per pod.
+	AutoscalingMetricRequestRate AutoscalingMetricType = "RequestRate"
+
+	// AutoscalingMetricQueryLatency scales based on PostgreSQL query
+	// latency (p99 milliseconds). Target is ms.
+	AutoscalingMetricQueryLatency AutoscalingMetricType = "QueryLatencyP99"
+)
+
+// AutoscalingMetricSpec defines one metric and its target for scaling.
+type AutoscalingMetricSpec struct {
+	// type is the metric to evaluate.
+	// +required
+	Type AutoscalingMetricType `json:"type"`
+
+	// target is the desired value for the metric. Interpretation
+	// depends on the metric type:
+	// - QueueSize: queue items per poller
+	// - PollerUtilization: percentage (0-100)
+	// - RequestRate: requests per second per replica
+	// - QueryLatencyP99: milliseconds
+	// +required
+	Target int64 `json:"target"`
+}
+
+// AutoscalingSpec configures horizontal autoscaling for a component.
+type AutoscalingSpec struct {
+	// enabled turns on autoscaling for this component.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// minReplicas is the lower bound for replica count.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// maxReplicas is the upper bound for replica count.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
+
+	// metrics is the list of metrics to evaluate. The scaler computes
+	// a desired replica count for each metric and takes the maximum.
+	// At least one metric is required when enabled.
+	// +optional
+	Metrics []AutoscalingMetricSpec `json:"metrics,omitempty"`
+
+	// cooldownPeriod is the minimum time between any scaling actions
+	// (scale-up or scale-down). Prevents flap.
+	// +kubebuilder:validation:Pattern=`^[0-9]+[smh]$`
+	// +optional
+	CooldownPeriod string `json:"cooldownPeriod,omitempty"`
+
+	// scaleUpStabilization is the time the scale-up condition must
+	// hold before acting. Must be <= cooldownPeriod.
+	// +kubebuilder:validation:Pattern=`^[0-9]+[smh]$`
+	// +optional
+	ScaleUpStabilization string `json:"scaleUpStabilization,omitempty"`
+
+	// scaleDownStabilization is the time the scale-down condition must
+	// hold before acting. Must be <= cooldownPeriod.
+	// +kubebuilder:validation:Pattern=`^[0-9]+[smh]$`
+	// +optional
+	ScaleDownStabilization string `json:"scaleDownStabilization,omitempty"`
+}
+
+// AutoscalingStatus records the last scaling decision for observability.
+type AutoscalingStatus struct {
+	// lastScaleTime is when the last scaling action occurred.
+	// +optional
+	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+
+	// lastScaleDirection was the direction of the last scale.
+	// +optional
+	LastScaleDirection string `json:"lastScaleDirection,omitempty"`
+
+	// lastScaleReason explains why the last scaling decision was made.
+	// +optional
+	LastScaleReason string `json:"lastScaleReason,omitempty"`
+
+	// currentReplicas is the replica count at last reconcile.
+	// +optional
+	CurrentReplicas int32 `json:"currentReplicas,omitempty"`
+
+	// desiredReplicas is the replica count the scaler computed.
+	// +optional
+	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
+}
+
+// CNPGAutoscalingSpec configures read-replica autoscaling for the
+// CloudNativePG cluster. Only read replicas are scaled; the primary
+// always stays at 1.
+type CNPGAutoscalingSpec struct {
+	// enabled turns on read-replica autoscaling.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// minReadReplicas is the minimum number of read replicas.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MinReadReplicas *int32 `json:"minReadReplicas,omitempty"`
+
+	// maxReadReplicas is the maximum number of read replicas.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxReadReplicas *int32 `json:"maxReadReplicas,omitempty"`
+
+	// metrics is the list of metrics to evaluate.
+	// +optional
+	Metrics []AutoscalingMetricSpec `json:"metrics,omitempty"`
+
+	// cooldownPeriod is the minimum time between scaling actions.
+	// +kubebuilder:validation:Pattern=`^[0-9]+[smh]$`
+	// +optional
+	CooldownPeriod string `json:"cooldownPeriod,omitempty"`
+
+	// scaleUpStabilization is the time the scale-up condition must hold.
+	// +kubebuilder:validation:Pattern=`^[0-9]+[smh]$`
+	// +optional
+	ScaleUpStabilization string `json:"scaleUpStabilization,omitempty"`
+
+	// scaleDownStabilization is the time the scale-down condition must hold.
+	// +kubebuilder:validation:Pattern=`^[0-9]+[smh]$`
+	// +optional
+	ScaleDownStabilization string `json:"scaleDownStabilization,omitempty"`
+}
+
+// CNPGAutoscalingStatus records the last CNPG scaling decision.
+type CNPGAutoscalingStatus struct {
+	// lastScaleTime is when the last scaling action occurred.
+	// +optional
+	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+
+	// lastScaleDirection was the direction of the last scale.
+	// +optional
+	LastScaleDirection string `json:"lastScaleDirection,omitempty"`
+
+	// lastScaleReason explains why the last scaling decision was made.
+	// +optional
+	LastScaleReason string `json:"lastScaleReason,omitempty"`
+
+	// currentReadReplicas is the read replica count at last reconcile.
+	// +optional
+	CurrentReadReplicas int32 `json:"currentReadReplicas,omitempty"`
+
+	// desiredReadReplicas is the read replica count the scaler computed.
+	// +optional
+	DesiredReadReplicas int32 `json:"desiredReadReplicas,omitempty"`
+}
+
 // AgentIntegrationSpec groups the optional AI-agent-facing components
 // the operator can deploy for this instance.
 type AgentIntegrationSpec struct {
@@ -398,6 +586,56 @@ type MCPSpec struct {
 	Service *FrontendServiceSpec `json:"service,omitempty"`
 }
 
+// LDAPSpec configures LDAP authentication for the Zabbix instance.
+// When enabled, users can authenticate using LDAP credentials instead
+// of local Zabbix credentials. The operator maintains the LDAP
+// configuration via authentication.update. Requires spec.api to write
+// the authentication object.
+type LDAPSpec struct {
+	// enabled turns on LDAP authentication.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// host is the LDAP server hostname or IP address.
+	// +required
+	Host string `json:"host"`
+
+	// port is the LDAP server port. Defaults to 389.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// bindDN is the DN of the service account used to bind to the LDAP
+	// server for user lookups. Empty means anonymous bind.
+	// +optional
+	BindDN string `json:"bindDN,omitempty"`
+
+	// bindPasswordSecretRef references a Secret containing the LDAP
+	// bind password. Required when bindDN is set.
+	// +optional
+	BindPasswordSecretRef corev1.SecretKeySelector `json:"bindPasswordSecretRef,omitempty"`
+
+	// searchBase is the LDAP search base (e.g. "ou=users,dc=example,dc=com").
+	// +required
+	SearchBase string `json:"searchBase"`
+
+	// searchFilter is the LDAP search filter (e.g. "uid=%s").
+	// Defaults to "uid=%s".
+	// +optional
+	SearchFilter string `json:"searchFilter,omitempty"`
+
+	// userAttribute is the LDAP attribute used for the username.
+	// Defaults to "uid".
+	// +optional
+	UserAttribute string `json:"userAttribute,omitempty"`
+
+	// caseSensitive enables case-sensitive username matching.
+	// Defaults to false.
+	// +optional
+	CaseSensitive bool `json:"caseSensitive,omitempty"`
+}
+
 // ZabbixSpec defines the desired state of Zabbix.
 // +kubebuilder:validation:XValidation:message="api.tokenSecretRef is required when server.replicas > 1: HA mode needs the Zabbix API for active-node routing",rule="!(has(self.server) && has(self.server.replicas) && self.server.replicas > 1) || (has(self.api) && has(self.api.tokenSecretRef))"
 // +kubebuilder:validation:XValidation:message="clusterMetrics requires spec.api (api.tokenSecretRef): the cluster host is managed through the Zabbix API",rule="!has(self.clusterMetrics) || (has(self.api) && has(self.api.tokenSecretRef))"
@@ -454,6 +692,14 @@ type ZabbixSpec struct {
 	// opt out. The API-driven parts require spec.api.
 	// +optional
 	Hardening *HardeningSpec `json:"hardening,omitempty"`
+
+	// ldap configures LDAP authentication for the Zabbix instance.
+	// When enabled, users can authenticate using LDAP credentials
+	// instead of local Zabbix credentials. The operator maintains the
+	// LDAP configuration via authentication.update. Requires spec.api
+	// to write the authentication object.
+	// +optional
+	LDAP *LDAPSpec `json:"ldap,omitempty"`
 }
 
 // TelemetryStorageSpec configures ClickHouse as the history storage
@@ -673,6 +919,17 @@ const (
 	// aggregate Ready: an instance without spec.api runs fully Ready
 	// with the API-driven hardening pending (the condition names it).
 	ConditionHardeningReady ComponentConditionType = "HardeningReady"
+
+	// ConditionAutoscalingActive indicates the autoscaling feature is
+	// enabled and metrics are reachable. False when metrics are
+	// unavailable (e.g., missing API token for Zabbix API metrics).
+	ConditionAutoscalingActive ComponentConditionType = "AutoscalingActive"
+
+	// ConditionAutoscalingPaused indicates autoscaling is temporarily
+	// paused due to an HA rollout transition (standalone<->HA). While
+	// paused, the operator freezes replica changes until the transition
+	// completes and the HA phase caps stabilize.
+	ConditionAutoscalingPaused ComponentConditionType = "AutoscalingPaused"
 )
 
 // ZabbixStatus defines the observed state of Zabbix.
@@ -742,6 +999,34 @@ type ZabbixStatus struct {
 	// the method they created. Empty = no operator-managed method.
 	// +optional
 	HardeningMFAMethodID string `json:"hardeningMFAMethodID,omitempty"`
+
+	// serverAutoscaling records the last server scaling decision.
+	// +optional
+	ServerAutoscaling *AutoscalingStatus `json:"serverAutoscaling,omitempty"`
+
+	// frontendAutoscaling records the last frontend scaling decision.
+	// +optional
+	FrontendAutoscaling *AutoscalingStatus `json:"frontendAutoscaling,omitempty"`
+
+	// webServiceAutoscaling records the last web service scaling decision.
+	// +optional
+	WebServiceAutoscaling *AutoscalingStatus `json:"webServiceAutoscaling,omitempty"`
+
+	// databaseAutoscaling records the last CNPG read-replica scaling decision.
+	// +optional
+	DatabaseAutoscaling *CNPGAutoscalingStatus `json:"databaseAutoscaling,omitempty"`
+
+	// ldapEnabled records whether LDAP authentication was last enabled.
+	// +optional
+	LDAPEnabled bool `json:"ldapEnabled,omitempty"`
+
+	// ldapHost records the LDAP host the operator last configured.
+	// +optional
+	LDAPHost string `json:"ldapHost,omitempty"`
+
+	// ldapPort records the LDAP port the operator last configured.
+	// +optional
+	LDAPPort int32 `json:"ldapPort,omitempty"`
 }
 
 // +kubebuilder:object:root=true

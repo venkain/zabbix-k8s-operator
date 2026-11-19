@@ -313,6 +313,13 @@ func (r *ZabbixReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	hardeningDelay := r.ensureHardening(ctx, &z, status)
 	requeueDelay = foldRequeueDelays(requeueDelay, hardeningDelay)
 
+	// 5e. Autoscaling (spec.*.autoscaling): evaluate metrics and
+	// compute desired replicas for server, frontend, web service,
+	// database read replicas, and proxy groups. Updates status memo
+	// and AutoscalingActive/AutoscalingPaused conditions.
+	autoscalingDelay := r.evaluateAutoscaling(ctx, &z, status)
+	requeueDelay = foldRequeueDelays(requeueDelay, autoscalingDelay)
+
 	return persistStatus(ctx, r.Client, &z, *status, requeueDelay)
 }
 

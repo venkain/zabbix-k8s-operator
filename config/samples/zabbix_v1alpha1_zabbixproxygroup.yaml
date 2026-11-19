@@ -27,3 +27,16 @@ spec:
   #   maxMessagesPerSecond: 10000  # per-member OTLP message quota
   #   tlsSecretRef:
   #     secretName: apm-tls
+
+# Optional (Zabbix 8.0+): autoscaling for the proxy group.
+# When enabled, the operator adjusts replicas between min/max
+# based on Zabbix API metrics (proxy queue size, task backlog).
+# Requires spec.api on the referenced Zabbix resource.
+# autoscaling:
+#   enabled: true
+#   minReplicas: 2
+#   maxReplicas: 10
+#   metrics:
+#     - type: QueueSize
+#       target: 50
+#   cooldownPeriod: 5m

@@ -42,10 +42,17 @@ const paramMFAID = "mfaid"
 // hardening reconciliation reads (authentication.get; integers arrive
 // quoted — the `,string` tags match the other API results).
 type Authentication struct {
-	PasswdMinLength  int64 `json:"passwd_min_length,string"`
-	PasswdCheckRules int64 `json:"passwd_check_rules,string"`
-	MFAStatus        int64 `json:"mfa_status,string"`
-	MFAID            int64 `json:"mfaid,string"`
+	PasswdMinLength   int64  `json:"passwd_min_length,string"`
+	PasswdCheckRules  int64  `json:"passwd_check_rules,string"`
+	MFAStatus         int64  `json:"mfa_status,string"`
+	MFAID             int64  `json:"mfaid,string"`
+	LDAPAuthEnabled   int64  `json:"ldap_auth_enabled,string"`
+	LDAPHost          string `json:"ldap_host"`
+	LDAPPort          int64  `json:"ldap_port,string"`
+	LDAPBindDN        string `json:"ldap_bind_dn"`
+	LDAPSearch        string `json:"ldap_search"`
+	LDAPUser          string `json:"ldap_user"`
+	LDAPCaseSensitive int64  `json:"ldap_case_sensitive,string"`
 }
 
 // mfaMethod is one mfa.get entry in wire format.
@@ -239,6 +246,61 @@ func DisableMFA(ctx context.Context, httpClient *http.Client, endpoint, token, i
 		return fmt.Errorf("mfa.delete: %w", err)
 	}
 	return nil
+}
+
+// EnsureLDAP converges LDAP authentication settings via
+// authentication.update. Returns whether a change was applied.
+func EnsureLDAP(ctx context.Context, httpClient *http.Client, endpoint, token string,
+	ldap *zabbixv1alpha1.LDAPSpec, bindPassword string) (bool, error) {
+	auth, err := FetchAuthentication(ctx, httpClient, endpoint, token)
+	if err != nil {
+		return false, err
+	}
+
+	desired := map[string]any{
+		"ldap_auth_enabled":   boolToInt(ldap.Enabled),
+		"ldap_host":           ldap.Host,
+		"ldap_port":           ldap.Port,
+		"ldap_bind_dn":        ldap.BindDN,
+		"ldap_bind_password":  bindPassword,
+		"ldap_search":         ldap.SearchBase,
+		"ldap_user":           ldap.UserAttribute,
+		"ldap_case_sensitive": boolToInt(ldap.CaseSensitive),
+	}
+
+	// Only check fields that are relevant. If LDAP is disabled, only
+	// check ldap_auth_enabled.
+	if !ldap.Enabled {
+		if auth.LDAPAuthEnabled == 0 {
+			return false, nil
+		}
+		if err := updateAuthentication(ctx, httpClient, endpoint, token, map[string]any{
+			"ldap_auth_enabled": 0,
+		}); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	// Compare current vs desired.
+	if auth.LDAPAuthEnabled != boolToInt(ldap.Enabled) ||
+		auth.LDAPHost != ldap.Host ||
+		auth.LDAPPort != int64(ldap.Port) ||
+		auth.LDAPBindDN != ldap.BindDN ||
+		auth.LDAPSearch != ldap.SearchBase ||
+		auth.LDAPUser != ldap.UserAttribute ||
+		auth.LDAPCaseSensitive != boolToInt(ldap.CaseSensitive) {
+		return false, updateAuthentication(ctx, httpClient, endpoint, token, desired)
+	}
+	return false, nil
+}
+
+// boolToInt converts a bool to int64 (0 or 1) for Zabbix API params.
+func boolToInt(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // parseLooseIDs decodes a mutation id list whose members may arrive
