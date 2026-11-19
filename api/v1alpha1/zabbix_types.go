@@ -586,6 +586,56 @@ type MCPSpec struct {
 	Service *FrontendServiceSpec `json:"service,omitempty"`
 }
 
+// LDAPSpec configures LDAP authentication for the Zabbix instance.
+// When enabled, users can authenticate using LDAP credentials instead
+// of local Zabbix credentials. The operator maintains the LDAP
+// configuration via authentication.update. Requires spec.api to write
+// the authentication object.
+type LDAPSpec struct {
+	// enabled turns on LDAP authentication.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// host is the LDAP server hostname or IP address.
+	// +required
+	Host string `json:"host"`
+
+	// port is the LDAP server port. Defaults to 389.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// bindDN is the DN of the service account used to bind to the LDAP
+	// server for user lookups. Empty means anonymous bind.
+	// +optional
+	BindDN string `json:"bindDN,omitempty"`
+
+	// bindPasswordSecretRef references a Secret containing the LDAP
+	// bind password. Required when bindDN is set.
+	// +optional
+	BindPasswordSecretRef corev1.SecretKeySelector `json:"bindPasswordSecretRef,omitempty"`
+
+	// searchBase is the LDAP search base (e.g. "ou=users,dc=example,dc=com").
+	// +required
+	SearchBase string `json:"searchBase"`
+
+	// searchFilter is the LDAP search filter (e.g. "uid=%s").
+	// Defaults to "uid=%s".
+	// +optional
+	SearchFilter string `json:"searchFilter,omitempty"`
+
+	// userAttribute is the LDAP attribute used for the username.
+	// Defaults to "uid".
+	// +optional
+	UserAttribute string `json:"userAttribute,omitempty"`
+
+	// caseSensitive enables case-sensitive username matching.
+	// Defaults to false.
+	// +optional
+	CaseSensitive bool `json:"caseSensitive,omitempty"`
+}
+
 // ZabbixSpec defines the desired state of Zabbix.
 // +kubebuilder:validation:XValidation:message="api.tokenSecretRef is required when server.replicas > 1: HA mode needs the Zabbix API for active-node routing",rule="!(has(self.server) && has(self.server.replicas) && self.server.replicas > 1) || (has(self.api) && has(self.api.tokenSecretRef))"
 // +kubebuilder:validation:XValidation:message="clusterMetrics requires spec.api (api.tokenSecretRef): the cluster host is managed through the Zabbix API",rule="!has(self.clusterMetrics) || (has(self.api) && has(self.api.tokenSecretRef))"
@@ -642,6 +692,14 @@ type ZabbixSpec struct {
 	// opt out. The API-driven parts require spec.api.
 	// +optional
 	Hardening *HardeningSpec `json:"hardening,omitempty"`
+
+	// ldap configures LDAP authentication for the Zabbix instance.
+	// When enabled, users can authenticate using LDAP credentials
+	// instead of local Zabbix credentials. The operator maintains the
+	// LDAP configuration via authentication.update. Requires spec.api
+	// to write the authentication object.
+	// +optional
+	LDAP *LDAPSpec `json:"ldap,omitempty"`
 }
 
 // TelemetryStorageSpec configures ClickHouse as the history storage

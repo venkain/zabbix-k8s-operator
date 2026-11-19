@@ -914,6 +914,79 @@ spec:
                         type: integer
                     type: object
                 type: object
+              ldap:
+                description: |-
+                  ldap configures LDAP authentication for the Zabbix instance.
+                  When enabled, users can authenticate using LDAP credentials
+                  instead of local Zabbix credentials. The operator maintains the
+                  LDAP configuration via authentication.update. Requires spec.api
+                  to write the authentication object.
+                properties:
+                  bindDN:
+                    description: |-
+                      bindDN is the DN of the service account used to bind to the LDAP
+                      server for user lookups. Empty means anonymous bind.
+                    type: string
+                  bindPasswordSecretRef:
+                    description: |-
+                      bindPasswordSecretRef references a Secret containing the LDAP
+                      bind password. Required when bindDN is set.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  caseSensitive:
+                    description: |-
+                      caseSensitive enables case-sensitive username matching.
+                      Defaults to false.
+                    type: boolean
+                  enabled:
+                    description: enabled turns on LDAP authentication.
+                    type: boolean
+                  host:
+                    description: host is the LDAP server hostname or IP address.
+                    type: string
+                  port:
+                    description: port is the LDAP server port. Defaults to 389.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  searchBase:
+                    description: searchBase is the LDAP search base (e.g. "ou=users,dc=example,dc=com").
+                    type: string
+                  searchFilter:
+                    description: |-
+                      searchFilter is the LDAP search filter (e.g. "uid=%s").
+                      Defaults to "uid=%s".
+                    type: string
+                  userAttribute:
+                    description: |-
+                      userAttribute is the LDAP attribute used for the username.
+                      Defaults to "uid".
+                    type: string
+                required:
+                - host
+                - searchBase
+                type: object
               server:
                 description: server configures the Zabbix server.
                 properties:
